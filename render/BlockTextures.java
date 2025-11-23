@@ -14,7 +14,7 @@ public class BlockTextures {
     private static TextureAtlas atlas;
     private static Map<Block, BlockTextureCoords> textureMap = new HashMap<>();
     
-    private static final String TEXTURE_PATH = "assets/minecraft/textures/blocks/";
+    private static final String TEXTURE_PATH = "assets/mineshaft/textures/blocks/";
     
     /**
      * Block texture coordinates (can have different textures per face)

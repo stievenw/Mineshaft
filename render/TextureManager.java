@@ -22,7 +22,7 @@ public class TextureManager {
     
     /**
      * Load texture from resources
-     * @param path Path relative to resources/ (e.g. "assets/minecraft/textures/blocks/grass_top.png")
+     * @param path Path relative to resources/ (e.g. "assets/mineshaft/textures/blocks/grass_top.png")
      * @return OpenGL texture ID
      */
     public static int loadTexture(String path) {

@@ -30,6 +30,7 @@ import static org.lwjgl.system.MemoryUtil.*;
 
 /**
  * ⚡ OPTIMIZED Game - Async Lighting & Mesh Building
+ * ✅ FIXED Chat System - Event-based input handling
  */
 public class Game {
     private long window;
@@ -148,12 +149,20 @@ public class Game {
 
     private void setupCallbacks() {
         glfwSetScrollCallback(window, (w, xoffset, yoffset) -> {
-            scrollOffset += yoffset;
+            // ✅ Only process scroll if chat is closed
+            if (!chatOverlay.isChatOpen()) {
+                scrollOffset += yoffset;
+            }
         });
 
         glfwSetFramebufferSizeCallback(window, (w, width, height) -> {
             glViewport(0, 0, width, height);
             updateProjectionMatrix(width, height);
+            
+            // ✅ Update chat overlay size
+            if (chatOverlay != null) {
+                chatOverlay.updateSize(width, height);
+            }
         });
     }
 
@@ -217,8 +226,11 @@ public class Game {
         hud = new HUD(window);
         debugScreen = new DebugScreen(window);
         input = new InputHandler(window);
+        
+        // ✅ Initialize chat overlay (will setup its own callbacks)
         chatOverlay = new ChatOverlay(window);
         commandHandler = new CommandHandler(world, camera, timeOfDay, chatOverlay);
+        
         skyRenderer = new SkyRenderer(timeOfDay);
 
         printControls();
@@ -263,7 +275,7 @@ public class Game {
         System.out.println("Other:");
         System.out.println("  V              - Toggle VSync");
         System.out.println("  F11            - Toggle fullscreen");
-        System.out.println("  ESC            - Exit");
+        System.out.println("  ESC            - Exit (when chat closed)");
         System.out.println("===============================================");
     }
 
@@ -324,7 +336,10 @@ public class Game {
      * ⚡ OPTIMIZED: Update with lighting engine update
      */
     private void update() {
-        camera.processInput(1.0f / Settings.TARGET_TPS);
+        // ✅ Only process camera input if chat is closed
+        if (!chatOverlay.isChatOpen()) {
+            camera.processInput(1.0f / Settings.TARGET_TPS);
+        }
         
         int oldSkylight = timeOfDay.getSkylightLevel();
         timeOfDay.update();
@@ -398,6 +413,8 @@ public class Game {
         }
 
         debugScreen.render(camera, world, camera.getGameMode(), fps, tps);
+        
+        // ✅ Render chat overlay (always last, on top of everything)
         chatOverlay.render();
     }
     
@@ -444,24 +461,27 @@ public class Game {
         glEnable(GL_TEXTURE_2D);
     }
 
+    /**
+     * ✅ FIXED: Handle input with proper chat priority
+     */
     private void handleInput() {
+        // ✅ PRIORITY 1: Check for pending chat messages
+        String chatMessage = chatOverlay.getPendingMessage();
+        if (chatMessage != null) {
+            commandHandler.executeCommand(chatMessage);
+            return; // Don't process other input this frame
+        }
+        
+        // ✅ PRIORITY 2: If chat is open, BLOCK all game input
+        // Chat handles T, /, Enter, Escape via its own callbacks
         if (chatOverlay.isChatOpen()) {
-            String message = chatOverlay.handleInput();
-            if (message != null) {
-                commandHandler.executeCommand(message);
-            }
-            return;
+            return; 
         }
         
-        if (input.isKeyPressed(GLFW_KEY_T)) {
-            chatOverlay.openChat();
-            return;
-        }
+        // ✅ PRIORITY 3: Game input (only when chat is closed)
         
-        if (input.isKeyPressed(GLFW_KEY_SLASH)) {
-            chatOverlay.openChatWithSlash();
-            return;
-        }
+        // ⚠️ REMOVED: T and / are now handled by ChatOverlay callbacks
+        // Don't handle them here to prevent conflicts!
         
         if (input.isKeyPressed(GLFW_KEY_ESCAPE)) {
             running = false;
@@ -512,12 +532,14 @@ public class Game {
             camera.toggleFlying();
         }
         
+        // Hotbar selection (1-9 keys)
         for (int i = 0; i < 9; i++) {
             if (input.isKeyPressed(GLFW_KEY_1 + i)) {
                 inventory.selectSlot(i);
             }
         }
         
+        // Mouse wheel scrolling
         int dwheel = getScrollDelta();
         if (dwheel > 0) {
             inventory.prevSlot();
@@ -525,6 +547,7 @@ public class Game {
             inventory.nextSlot();
         }
         
+        // Mouse button interactions
         if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) {
             if (!leftMousePressed && camera.getGameMode() != GameMode.SPECTATOR) {
                 breakBlock();
@@ -730,6 +753,9 @@ public class Game {
         }
     }
 
+    /**
+     * ✅ FIXED: Cleanup with chat overlay callback removal
+     */
     private void cleanup() {
         System.out.println("===============================================");
         System.out.println("Shutting down...");
@@ -740,6 +766,11 @@ public class Game {
         
         if (skyRenderer != null) {
             skyRenderer.cleanup();
+        }
+        
+        // ✅ Cleanup chat overlay callbacks
+        if (chatOverlay != null) {
+            chatOverlay.cleanup();
         }
         
         BlockTextures.cleanup();
