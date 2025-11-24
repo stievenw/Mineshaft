@@ -26,7 +26,7 @@ public class Player extends Entity {
 
     // Movement constants
     private static final float STEP_HEIGHT = 0.6f;
-    private static final float GROUND_SNAP_DISTANCE = 0.1f;
+    private static final float GROUND_SNAP_DISTANCE = 0.02f;
     private static final float SNEAK_SPEED_MULTIPLIER = 0.3f;
 
     private final long window;
@@ -47,14 +47,8 @@ public class Player extends Entity {
     private double prevX = 0;
     private double prevZ = 0;
 
-    // Smooth stepping
-    private float stepAnimationProgress = 0;
-    private float stepStartY = 0;
-    private float stepTargetY = 0;
-    private boolean isStepping = false;
-
     public Player(World world, long window) {
-        super(null);
+        super(null); // EntityType is null for player for now
         this.world = world;
         this.window = window;
         this.inventory = new Inventory();
@@ -69,22 +63,6 @@ public class Player extends Entity {
         // Store previous position
         prevX = x;
         prevZ = z;
-
-        // Update smooth stepping animation
-        if (isStepping) {
-            stepAnimationProgress += frameDelta * 12.0f; // Kecepatan animasi stepping
-
-            if (stepAnimationProgress >= 1.0f) {
-                y = stepTargetY;
-                isStepping = false;
-                stepAnimationProgress = 0;
-            } else {
-                // Smooth interpolation (ease-out)
-                float t = stepAnimationProgress;
-                float smoothT = t * t * (3.0f - 2.0f * t); // Smoothstep function
-                y = stepStartY + (stepTargetY - stepStartY) * smoothT;
-            }
-        }
 
         // Process movement
         processMovement(frameDelta);
@@ -121,7 +99,7 @@ public class Player extends Entity {
         if (!flying) {
             sneaking = shiftPressed;
         } else {
-            sneaking = false;
+            sneaking = false; // Cannot sneak while flying
         }
 
         // Base movement speed
@@ -196,10 +174,12 @@ public class Player extends Entity {
     private void handleFlyingVerticalMovement(float speed) {
         float moveY = 0;
 
+        // Space = up
         if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
             moveY = speed * 2;
         }
 
+        // Shift = down (but only when flying, not sneaking on ground)
         if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) {
             moveY = -speed * 2;
         }
@@ -232,285 +212,8 @@ public class Player extends Entity {
                 velocityY = WATER_SWIM_SPEED;
             }
         } else {
-            if (onGround && !sneaking) {
+            if (onGround && !sneaking) { // Cannot jump while sneaking
                 velocityY = JUMP_STRENGTH;
-                onGround = false;
-            }
-        }
-    }
-
-    /**
-     * Move with collision detection and step-up
-     */
-    private void moveWithCollisionAndStep(float dx, float dz) {
-        if (world == null) {
-            x += dx;
-            z += dz;
-            return;
-        }
-
-        float newX = x + dx;
-        float newZ = z + dz;
-
-        // Check collision at new position
-        if (!isColliding(newX, y, newZ)) {
-            x = newX;
-            z = newZ;
-            return;
-        }
-
-        // Try stepping up (not while sneaking and not already stepping)
-        boolean canStep = !sneaking && !isStepping && (onGround || isOnGroundCheck(x, y, z) || inWater);
-
-        if (canStep) {
-            // Find optimal step height using binary search
-            float optimalStep = findOptimalStepHeight(newX, newZ);
-
-            if (optimalStep > 0 && optimalStep <= STEP_HEIGHT) {
-                float targetY = y + optimalStep;
-
-                if (!isColliding(newX, targetY, newZ)) {
-                    x = newX;
-                    z = newZ;
-
-                    // Start smooth stepping animation
-                    stepStartY = y;
-                    stepTargetY = targetY;
-                    isStepping = true;
-                    stepAnimationProgress = 0;
-
-                    if (inWater && velocityY < 0.1f) {
-                        velocityY = 0.1f;
-                    }
-
-                    return;
-                }
-            }
-        }
-
-        // Slide along walls
-        float oldX = x;
-        float oldZ = z;
-
-        if (!isColliding(newX, y, oldZ)) {
-            x = newX;
-        }
-
-        if (!isColliding(oldX, y, newZ)) {
-            z = newZ;
-        }
-    }
-
-    /**
-     * Find optimal step height using binary search
-     */
-    private float findOptimalStepHeight(float newX, float newZ) {
-        float minStep = 0.0f;
-        float maxStep = STEP_HEIGHT;
-        float epsilon = 0.05f;
-
-        // Check if stepping is possible at max height
-        if (!isColliding(newX, y + maxStep, newZ)) {
-            // Binary search for minimum required step height
-            while (maxStep - minStep > epsilon) {
-                float midStep = (minStep + maxStep) / 2.0f;
-
-                if (isColliding(newX, y + midStep, newZ)) {
-                    minStep = midStep;
-                } else {
-                    maxStep = midStep;
-                }
-            }
-
-            return maxStep;
-        }
-
-        return 0; // Cannot step
-    }
-
-    /**
-     * Find ground Y position below player
-     */
-    private float getGroundYBelow(float px, float py, float pz) {
-        if (world == null)
-            return -1;
-
-        float halfWidth = PLAYER_WIDTH / 2;
-
-        int minX = (int) Math.floor(px - halfWidth);
-        int maxX = (int) Math.floor(px + halfWidth);
-        int minZ = (int) Math.floor(pz - halfWidth);
-        int maxZ = (int) Math.floor(pz + halfWidth);
-
-        int startY = (int) Math.floor(py);
-        int searchDepth = 3; // Reduced untuk performa lebih baik
-
-        int highestGroundY = -1;
-
-        for (int checkY = startY; checkY >= startY - searchDepth && checkY >= 0; checkY--) {
-            for (int bx = minX; bx <= maxX; bx++) {
-                for (int bz = minZ; bz <= maxZ; bz++) {
-                    GameBlock block = world.getBlock(bx, checkY, bz);
-
-                    if (block.isSolid()) {
-                        highestGroundY = Math.max(highestGroundY, checkY);
-                    }
-                }
-            }
-
-            if (highestGroundY != -1) {
-                break;
-            }
-        }
-
-        if (highestGroundY != -1) {
-            return highestGroundY + 1.0f;
-        }
-
-        return -1;
-    }
-
-    /**
-     * Check if player is in water
-     */
-    private void checkWaterStatus() {
-        if (world == null) {
-            inWater = false;
-            headInWater = false;
-            return;
-        }
-
-        int checkX = (int) Math.floor(x);
-        int checkZ = (int) Math.floor(z);
-
-        // Check head position
-        int headY = (int) Math.floor(y + getCurrentEyeHeight() - 0.1f);
-        GameBlock headBlock = world.getBlock(checkX, headY, checkZ);
-        headInWater = (headBlock == BlockRegistry.WATER);
-
-        // Check body position
-        int bodyY = (int) Math.floor(y + getCurrentHeight() * 0.5f);
-        GameBlock bodyBlock = world.getBlock(checkX, bodyY, checkZ);
-
-        // Check feet position
-        int feetY = (int) Math.floor(y + 0.4f);
-        GameBlock feetBlock = world.getBlock(checkX, feetY, checkZ);
-
-        inWater = (bodyBlock == BlockRegistry.WATER) || (feetBlock == BlockRegistry.WATER);
-    }
-
-    /**
-     * Apply water physics
-     */
-    private void applyWaterPhysics(float delta) {
-        // Jangan apply physics saat sedang stepping
-        if (isStepping)
-            return;
-
-        velocityY += WATER_GRAVITY;
-
-        if (velocityY < WATER_TERMINAL_VELOCITY) {
-            velocityY = WATER_TERMINAL_VELOCITY;
-        }
-
-        if (velocityY > MAX_WATER_UP_SPEED) {
-            velocityY = MAX_WATER_UP_SPEED;
-        }
-
-        float newY = y + velocityY;
-
-        if (velocityY <= 0) {
-            if (isOnGroundCheck(x, newY, z)) {
-                float groundY = getGroundYBelow(x, newY, z);
-                if (groundY > 0) {
-                    y = groundY;
-                    velocityY = 0;
-                    onGround = true;
-                } else {
-                    y = newY;
-                    onGround = false;
-                }
-            } else {
-                y = newY;
-                onGround = false;
-            }
-        } else {
-            if (isCeilingCollision(x, newY, z)) {
-                velocityY = 0;
-            } else {
-                y = newY;
-            }
-            onGround = false;
-        }
-    }
-
-    /**
-     * Apply gravity and ground physics
-     */
-    private void applyPhysics(float delta) {
-        // Jangan apply physics saat sedang stepping
-        if (isStepping)
-            return;
-
-        // Ground snap - hanya saat tidak bergerak
-        if (onGround && velocityY == 0 && !isMoving()) {
-            float groundY = getGroundYBelow(x, y, z);
-
-            if (groundY > 0) {
-                float distToGround = y - groundY;
-
-                if (Math.abs(distToGround) < 0.001f) {
-                    y = groundY;
-                    return;
-                } else if (distToGround > 0 && distToGround < GROUND_SNAP_DISTANCE) {
-                    y = groundY;
-                    return;
-                } else if (distToGround > GROUND_SNAP_DISTANCE) {
-                    onGround = false;
-                }
-            } else {
-                onGround = false;
-            }
-        }
-
-        // Apply gravity
-        velocityY += GRAVITY;
-
-        if (velocityY < TERMINAL_VELOCITY) {
-            velocityY = TERMINAL_VELOCITY;
-        }
-
-        float newY = y + velocityY;
-
-        // Falling/landing
-        if (velocityY <= 0) {
-            if (isOnGroundCheck(x, newY, z)) {
-                float groundY = getGroundYBelow(x, newY, z);
-
-                if (groundY > 0) {
-                    y = groundY;
-                    velocityY = 0;
-                    onGround = true;
-                    return;
-                }
-            }
-        }
-        // Rising
-        else {
-            if (isCeilingCollision(x, newY, z)) {
-                velocityY = 0;
-                newY = y;
-            }
-        }
-
-        y = newY;
-        onGround = false;
-    }
-
-    /**
-     * Check collision with current player height (accounts for sneaking)
-     */
-    private boolean isColliding(float px, float py, float pz) {
         if (world == null)
             return false;
 
@@ -601,8 +304,7 @@ public class Player extends Entity {
             flying = !flying;
             if (flying) {
                 velocityY = 0;
-                sneaking = false;
-                isStepping = false; // Cancel stepping
+                sneaking = false; // Stop sneaking when flying
             }
             System.out.println("Flying: " + (flying ? "ON" : "OFF"));
         } else {
@@ -685,7 +387,6 @@ public class Player extends Entity {
             flying = true;
             velocityY = 0;
             sneaking = false;
-            isStepping = false;
         } else {
             flying = false;
         }
