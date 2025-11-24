@@ -31,7 +31,7 @@ Mineshaft is an open-source game inspired by Minecraft. This project serves as a
 - [ ] Inventory system
 - [ ] Crafting mechanics
 - [ ] Mobs and entities
-- [ ] Day/night cycle
+- [x] Day/night cycle
 - [ ] Advanced biomes
 - [ ] Cave generation
 - [ ] Lighting system
