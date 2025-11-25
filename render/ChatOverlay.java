@@ -164,14 +164,14 @@ public class ChatOverlay {
         }
     }
 
-    private void openChat() {
+    public void openChat() {
         chatOpen = true;
         currentInput.setLength(0);
         historyIndex = -1;
         System.out.println("[Chat] Opened");
     }
 
-    private void openChatWithCommand() {
+    public void openChatWithCommand() {
         chatOpen = true;
         currentInput.setLength(0);
         currentInput.append("/");

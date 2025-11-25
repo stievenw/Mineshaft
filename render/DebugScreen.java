@@ -1,3 +1,4 @@
+// src/main/java/com/mineshaft/render/DebugScreen.java
 package com.mineshaft.render;
 
 import com.mineshaft.entity.Camera;
@@ -16,7 +17,7 @@ import static org.lwjgl.glfw.GLFW.*;
 import static org.lwjgl.opengl.GL11.*;
 
 /**
- * ✅ FIXED - No deprecated warnings, Java 14+ compatible
+ * ✅ Enhanced debug screen with async generation stats
  */
 public class DebugScreen {
 
@@ -53,26 +54,17 @@ public class DebugScreen {
         System.out.println("[DebugScreen] Initialized with system RAM tracking");
     }
 
-    /**
-     * ✅ FIXED - Use non-deprecated methods
-     */
     private void getSystemRAM() {
         try {
             OperatingSystemMXBean osBean = (OperatingSystemMXBean) ManagementFactory.getOperatingSystemMXBean();
-
-            // ✅ Use getTotalMemorySize() instead of getTotalPhysicalMemorySize()
-            systemTotalRAM = osBean.getTotalMemorySize() / (1024 * 1024); // MB
-
+            systemTotalRAM = osBean.getTotalMemorySize() / (1024 * 1024);
             System.out.println("[DebugScreen] System RAM: " + systemTotalRAM + " MB");
         } catch (NoSuchMethodError e) {
-            // ✅ Fallback for older Java versions
             try {
                 OperatingSystemMXBean osBean = (OperatingSystemMXBean) ManagementFactory.getOperatingSystemMXBean();
-
                 @SuppressWarnings("deprecation")
                 long totalRAM = osBean.getTotalPhysicalMemorySize() / (1024 * 1024);
                 systemTotalRAM = totalRAM;
-
                 System.out.println("[DebugScreen] System RAM (legacy): " + systemTotalRAM + " MB");
             } catch (Exception ex) {
                 System.err.println("[DebugScreen] Could not get system RAM: " + ex.getMessage());
@@ -217,6 +209,7 @@ public class DebugScreen {
         y += LINE_HEIGHT;
         y += 2;
 
+        // ✅ CHUNK STATS
         int renderDistance = Settings.RENDER_DISTANCE;
         drawText(String.format("Render Distance: %d chunks", renderDistance), x, y, 1, 1, 1);
         y += LINE_HEIGHT;
@@ -224,6 +217,25 @@ public class DebugScreen {
         int loadedChunks = world != null ? world.getLoadedChunkCount() : 0;
         drawText(String.format("Loaded Chunks: %d", loadedChunks), x, y, 1, 1, 1);
         y += LINE_HEIGHT;
+
+        // ✅ NEW: Async generation stats
+        if (world != null) {
+            int pendingGen = world.getPendingGenerations();
+            int activeThreads = world.getActiveGenerationThreads();
+
+            if (pendingGen > 0 || activeThreads > 0) {
+                drawText(String.format("Generating: %d pending (%d threads)",
+                        pendingGen, activeThreads), x, y, 1, 0.7f, 0);
+                y += LINE_HEIGHT;
+            }
+
+            // ✅ Mesh building stats
+            int meshBuilds = world.getRenderer().getPendingBuilds();
+            if (meshBuilds > 0) {
+                drawText(String.format("Mesh Builds: %d", meshBuilds), x, y, 1, 0.7f, 0);
+                y += LINE_HEIGHT;
+            }
+        }
         y += 2;
 
         if (showChunkBorders) {
@@ -245,7 +257,6 @@ public class DebugScreen {
         y += LINE_HEIGHT;
         y += 2;
 
-        // System RAM
         if (systemTotalRAM > 0) {
             long systemUsedRAM = systemTotalRAM - systemFreeRAM;
             drawTextRight(String.format("System RAM: %d / %d MB",
@@ -253,7 +264,6 @@ public class DebugScreen {
             y += LINE_HEIGHT;
         }
 
-        // JVM Memory
         drawTextRight(String.format("Java Mem: %d / %d MB (%d%%)",
                 usedMemoryMB, allocatedMemoryMB, memoryPercent), y, 1, 1, 0);
         y += LINE_HEIGHT;
@@ -351,9 +361,6 @@ public class DebugScreen {
         glEnd();
     }
 
-    /**
-     * ✅ FIXED - Use non-deprecated methods
-     */
     private void updateMemoryStats() {
         long now = System.currentTimeMillis();
         if (now - lastMemoryCheck < 500)
@@ -378,17 +385,12 @@ public class DebugScreen {
             memoryPercent = 0;
         }
 
-        // ✅ Update system RAM with non-deprecated method
         try {
             OperatingSystemMXBean osBean = (OperatingSystemMXBean) ManagementFactory.getOperatingSystemMXBean();
-
-            // ✅ Use getFreeMemorySize() instead of getFreePhysicalMemorySize()
             systemFreeRAM = osBean.getFreeMemorySize() / (1024 * 1024);
         } catch (NoSuchMethodError e) {
-            // ✅ Fallback for older Java versions
             try {
                 OperatingSystemMXBean osBean = (OperatingSystemMXBean) ManagementFactory.getOperatingSystemMXBean();
-
                 @SuppressWarnings("deprecation")
                 long freeRAM = osBean.getFreePhysicalMemorySize() / (1024 * 1024);
                 systemFreeRAM = freeRAM;

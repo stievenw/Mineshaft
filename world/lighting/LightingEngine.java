@@ -157,7 +157,7 @@ public class LightingEngine {
     }
 
     /**
-     * ⚡ Async chunk skylight update
+     * ⚡ Async chunk skylight update - ✅ PERFORMANCE OPTIMIZED
      */
     private void updateChunkSkylightAsync(Chunk chunk, int skylightLevel) {
         if (chunk == null)
@@ -165,10 +165,10 @@ public class LightingEngine {
 
         ChunkPosition pos = new ChunkPosition(chunk.getChunkX(), chunk.getChunkZ());
 
-        // Check cache
+        // ✅ PERFORMANCE: Check cache to avoid unnecessary updates
         Integer cachedLevel = skylightCache.get(pos);
         if (cachedLevel != null && cachedLevel == skylightLevel) {
-            return;
+            return; // No change needed
         }
 
         // Update skylight
@@ -181,6 +181,7 @@ public class LightingEngine {
             }
         }
 
+        // ✅ PERFORMANCE: Only rebuild if lighting actually changed
         if (changed) {
             skylightCache.put(pos, skylightLevel);
             chunk.setNeedsRebuild(true);
@@ -188,14 +189,15 @@ public class LightingEngine {
     }
 
     /**
-     * ⚡ Update single column
+     * ⚡ Update single column - ✅ PERFORMANCE OPTIMIZED with array indices
      */
     private boolean updateColumnSkylight(Chunk chunk, int x, int z, int skylightLevel) {
         int currentLight = skylightLevel;
         boolean changed = false;
 
-        for (int y = Chunk.CHUNK_HEIGHT - 1; y >= 0; y--) {
-            GameBlock block = chunk.getBlock(x, y, z);
+        // ✅ PERFORMANCE: Use array index loop (top to bottom)
+        for (int index = Chunk.CHUNK_HEIGHT - 1; index >= 0; index--) {
+            GameBlock block = chunk.getBlockByIndex(x, index, z);
             int newLight;
 
             if (block == null || block.isAir() || !block.isSolid()) {
@@ -205,9 +207,11 @@ public class LightingEngine {
                 currentLight = 0;
             }
 
-            int oldLight = chunk.getSkyLight(x, y, z);
+            // Convert index to world Y for getSkyLight/setSkyLight calls
+            int worldY = com.mineshaft.core.Settings.indexToWorldY(index);
+            int oldLight = chunk.getSkyLight(x, worldY, z);
             if (oldLight != newLight) {
-                chunk.setSkyLight(x, y, z, newLight);
+                chunk.setSkyLight(x, worldY, z, newLight);
                 changed = true;
             }
         }
@@ -255,21 +259,24 @@ public class LightingEngine {
     }
 
     /**
-     * ⚡ Blocklight initialization
+     * ⚡ Blocklight initialization - ✅ PERFORMANCE OPTIMIZED with array indices
      */
     public void initializeBlocklightForChunk(Chunk chunk) {
         lightingExecutor.submit(() -> {
             Queue<LightNode> lightQueue = new LinkedList<>();
 
+            // ✅ PERFORMANCE: Use array index loops
             for (int x = 0; x < Chunk.CHUNK_SIZE; x++) {
-                for (int y = 0; y < Chunk.CHUNK_HEIGHT; y++) {
+                for (int index = 0; index < Chunk.CHUNK_HEIGHT; index++) {
                     for (int z = 0; z < Chunk.CHUNK_SIZE; z++) {
-                        GameBlock block = chunk.getBlock(x, y, z);
+                        GameBlock block = chunk.getBlockByIndex(x, index, z);
                         int lightLevel = (block != null) ? block.getLightLevel() : 0;
 
                         if (lightLevel > 0) {
-                            chunk.setBlockLight(x, y, z, lightLevel);
-                            lightQueue.add(new LightNode(x, y, z, lightLevel));
+                            // Convert to world Y for light storage
+                            int worldY = com.mineshaft.core.Settings.indexToWorldY(index);
+                            chunk.setBlockLight(x, worldY, z, lightLevel);
+                            lightQueue.add(new LightNode(x, worldY, z, lightLevel));
                         }
                     }
                 }
@@ -280,7 +287,8 @@ public class LightingEngine {
     }
 
     /**
-     * ⚡ OPTIMIZED: Light propagation with operation limit
+     * ⚡ OPTIMIZED: Light propagation with operation limit - ✅ Using world Y
+     * validation
      */
     private void propagateLightOptimized(Chunk chunk, Queue<LightNode> queue, boolean isSkylight) {
         int[][] directions = {
@@ -299,7 +307,7 @@ public class LightingEngine {
             if (visited.contains(key))
                 continue;
             visited.add(key);
-            operations++; // ✅ FIX: Now operations is actually used
+            operations++;
 
             int newLight = node.lightLevel - 1;
             if (newLight <= 0)
@@ -310,8 +318,9 @@ public class LightingEngine {
                 int ny = node.y + dir[1];
                 int nz = node.z + dir[2];
 
+                // ✅ Check chunk bounds for X and Z, world Y bounds for Y
                 if (nx < 0 || nx >= Chunk.CHUNK_SIZE ||
-                        ny < 0 || ny >= Chunk.CHUNK_HEIGHT ||
+                        !com.mineshaft.core.Settings.isValidWorldY(ny) ||
                         nz < 0 || nz >= Chunk.CHUNK_SIZE) {
                     continue;
                 }
@@ -402,8 +411,9 @@ public class LightingEngine {
             int ny = y + dir[1];
             int nz = z + dir[2];
 
+            // ✅ Check chunk bounds for X and Z, world Y bounds for Y
             if (nx < 0 || nx >= Chunk.CHUNK_SIZE ||
-                    ny < 0 || ny >= Chunk.CHUNK_HEIGHT ||
+                    !com.mineshaft.core.Settings.isValidWorldY(ny) ||
                     nz < 0 || nz >= Chunk.CHUNK_SIZE) {
                 continue;
             }

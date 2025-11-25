@@ -1,8 +1,9 @@
-
+// src/main/java/com/mineshaft/world/World.java
 package com.mineshaft.world;
 
 import com.mineshaft.block.GameBlock;
 import com.mineshaft.block.BlockRegistry;
+import com.mineshaft.core.Settings;
 import com.mineshaft.core.TimeOfDay;
 import com.mineshaft.entity.Camera;
 import com.mineshaft.render.ChunkRenderer;
@@ -11,33 +12,50 @@ import com.mineshaft.world.lighting.LightingEngine;
 import java.util.*;
 
 /**
- * ⚡ OPTIMIZED World with Async Lighting & Mesh Building
- * ✅ FIXED - Added logging and consistency checks for chunk tracking
+ * ⚡ OPTIMIZED World with Async Generation & Lighting
+ * ✅ Multi-threaded terrain generation
+ * ✅ Progressive chunk loading
+ * ✅ No FPS drops
  */
 public class World {
     private Map<ChunkPos, Chunk> chunks = new HashMap<>();
+    // ✅ NEW: Seed handling for world generation
+    private long seed;
     private ChunkRenderer renderer = new ChunkRenderer();
     private LightingEngine lightingEngine;
+    private ChunkGenerationManager generationManager;
 
-    private int renderDistance = 8;
-
+    private int renderDistance = Settings.RENDER_DISTANCE;
     private TimeOfDay timeOfDay;
 
-    private long lastSunRebuildTime = 0;
-    private static final long SUN_REBUILD_INTERVAL_MS = 100;
-
-    // ✅ Debug tracking
+    // Debug tracking
     private int lastChunkCount = 0;
     private long lastChunkCountLog = 0;
-    private static final long CHUNK_LOG_INTERVAL = 2000; // Log every 2 seconds
+    private static final long CHUNK_LOG_INTERVAL = 2000;
 
     public World(TimeOfDay timeOfDay) {
         this.timeOfDay = timeOfDay;
         renderer.setWorld(this);
         lightingEngine = new LightingEngine(this, timeOfDay);
         renderer.setLightingEngine(lightingEngine);
+        // Initialize async generation system
+        generationManager = new ChunkGenerationManager();
 
         System.out.println("World created (render distance: " + renderDistance + " chunks)");
+    }
+
+    /**
+     * ✅ Set the world seed used for terrain generation.
+     */
+    public void setSeed(long seed) {
+        this.seed = seed;
+    }
+
+    /**
+     * ✅ Retrieve the current world seed.
+     */
+    public long getSeed() {
+        return this.seed;
     }
 
     public TimeOfDay getTimeOfDay() {
@@ -57,13 +75,13 @@ public class World {
     }
 
     /**
-     * ✅ FIXED - Better chunk management with logging
+     * ✅ OPTIMIZED - Async chunk loading
      */
     public void updateChunks(int centerChunkX, int centerChunkZ) {
         Set<ChunkPos> chunksToLoad = new HashSet<>();
         Set<ChunkPos> chunksToUnload = new HashSet<>();
 
-        // ✅ Calculate which chunks should be loaded
+        // Calculate which chunks should be loaded
         for (int x = centerChunkX - renderDistance; x <= centerChunkX + renderDistance; x++) {
             for (int z = centerChunkZ - renderDistance; z <= centerChunkZ + renderDistance; z++) {
                 int dx = x - centerChunkX;
@@ -75,111 +93,151 @@ public class World {
             }
         }
 
-        // ✅ Find chunks to unload (chunks that exist but shouldn't)
+        // Find chunks to unload
         for (ChunkPos pos : chunks.keySet()) {
             if (!chunksToLoad.contains(pos)) {
                 chunksToUnload.add(pos);
             }
         }
 
-        // ✅ Unload first
+        // Unload chunks
         for (ChunkPos pos : chunksToUnload) {
-            unloadChunk(pos);
+            unloadChunkInternal(pos);
         }
 
-        // ✅ Then load new chunks
+        // Load new chunks
         for (ChunkPos pos : chunksToLoad) {
             if (!chunks.containsKey(pos)) {
-                loadChunk(pos.x, pos.z);
+                loadChunkInternal(pos.x, pos.z, centerChunkX, centerChunkZ);
             }
         }
 
+        // Update async generation system
+        generationManager.update();
+
+        // Update lighting for generated chunks
         updateLighting();
 
-        // ✅ Debug logging
         logChunkCount();
     }
 
     /**
-     * ✅ NEW - Log chunk count changes
+     * ✅ Internal: Load chunk and queue for async generation
      */
-    private void logChunkCount() {
-        int currentCount = chunks.size();
-        long now = System.currentTimeMillis();
+    private void loadChunkInternal(int chunkX, int chunkZ, int playerChunkX, int playerChunkZ) {
+        ChunkPos pos = new ChunkPos(chunkX, chunkZ);
 
-        // Log if count changed OR every 2 seconds
-        if (currentCount != lastChunkCount || (now - lastChunkCountLog > CHUNK_LOG_INTERVAL)) {
-            if (currentCount != lastChunkCount) {
-                System.out.println(String.format(
-                        "[World] Chunks: %d -> %d (%+d)",
-                        lastChunkCount, currentCount, (currentCount - lastChunkCount)));
-            }
-            lastChunkCount = currentCount;
-            lastChunkCountLog = now;
+        if (!chunks.containsKey(pos)) {
+            // Create chunk WITHOUT generating terrain (instant)
+            Chunk chunk = new Chunk(chunkX, chunkZ);
+            chunks.put(pos, chunk);
+
+            // Calculate distance for prioritization
+            int dx = chunkX - playerChunkX;
+            int dz = chunkZ - playerChunkZ;
+            double distSq = dx * dx + dz * dz;
+
+            // Queue for async terrain generation
+            generationManager.queueGeneration(chunk, distSq);
         }
     }
 
+    /**
+     * ✅ Internal: Unload chunk and cleanup
+     */
+    private void unloadChunkInternal(ChunkPos pos) {
+        Chunk chunk = chunks.remove(pos);
+        if (chunk != null) {
+            // Cancel any pending lighting updates
+            lightingEngine.cancelChunkUpdates(chunk);
+
+            // Remove from renderer
+            renderer.removeChunk(chunk);
+        }
+    }
+
+    /**
+     * ✅ Initialize lighting for newly generated chunks
+     */
     private void updateLighting() {
         int skylightLevel = (timeOfDay != null) ? timeOfDay.getSkylightLevel() : 15;
 
         for (Chunk chunk : chunks.values()) {
-            if (chunk.isGenerated() && !chunk.isLightInitialized()) {
+            // Only process chunks that have terrain generated but no lighting yet
+            if (chunk.getState() == ChunkState.LIGHT_PENDING && !chunk.isLightInitialized()) {
                 lightingEngine.initializeSkylightForChunk(chunk, skylightLevel);
                 lightingEngine.initializeBlocklightForChunk(chunk);
 
                 chunk.setLightInitialized(true);
+                chunk.setState(ChunkState.READY);
+                chunk.setNeedsRebuild(true);
+
+                // Mark neighbors for rebuild
+                markNeighborsForRebuild(chunk.getChunkX(), chunk.getChunkZ());
+            }
+        }
+    }
+
+    // ========== PUBLIC CHUNK LOADING API ==========
+
+    /**
+     * ✅ Get or create chunk at specified coordinates
+     */
+    public Chunk getOrCreateChunk(int chunkX, int chunkZ) {
+        ChunkPos pos = new ChunkPos(chunkX, chunkZ);
+        Chunk chunk = chunks.get(pos);
+
+        if (chunk == null) {
+            chunk = new Chunk(chunkX, chunkZ);
+            chunks.put(pos, chunk);
+        }
+
+        return chunk;
+    }
+
+    /**
+     * ✅ Load chunk at specified coordinates (public API)
+     */
+    public void loadChunk(int chunkX, int chunkZ) {
+        Chunk chunk = getOrCreateChunk(chunkX, chunkZ);
+        if (chunk != null && !chunk.isGenerated()) {
+            chunk.generate();
+
+            // Initialize lighting after generation
+            if (chunk.isGenerated() && !chunk.isLightInitialized()) {
+                int skylightLevel = (timeOfDay != null) ? timeOfDay.getSkylightLevel() : 15;
+                lightingEngine.initializeSkylightForChunk(chunk, skylightLevel);
+                lightingEngine.initializeBlocklightForChunk(chunk);
+                chunk.setLightInitialized(true);
+                chunk.setState(ChunkState.READY);
                 chunk.setNeedsRebuild(true);
             }
         }
     }
 
-    public void updateSkylightForTimeChange() {
-        if (timeOfDay == null)
-            return;
+    /**
+     * ✅ Unload chunk at specified coordinates (public API)
+     */
+    public void unloadChunk(int chunkX, int chunkZ) {
+        ChunkPos pos = new ChunkPos(chunkX, chunkZ);
+        Chunk chunk = chunks.remove(pos);
 
-        for (Chunk chunk : chunks.values()) {
-            if (chunk.isGenerated() && chunk.isLightInitialized()) {
-                lightingEngine.queueChunkForLightUpdate(chunk);
+        if (chunk != null) {
+            // Cancel any pending lighting updates
+            if (lightingEngine != null) {
+                lightingEngine.cancelChunkUpdates(chunk);
             }
-        }
-    }
 
-    public void updateSunLight() {
-        if (lightingEngine != null) {
-            boolean sunDirectionChanged = lightingEngine.updateSunLight();
-
-            if (sunDirectionChanged) {
-                long currentTime = System.currentTimeMillis();
-
-                if (currentTime - lastSunRebuildTime >= SUN_REBUILD_INTERVAL_MS) {
-                    lastSunRebuildTime = currentTime;
-
-                    for (Chunk chunk : chunks.values()) {
-                        if (chunk.isGenerated() && chunk.isLightInitialized()) {
-                            chunk.setNeedsRebuild(true);
-                        }
-                    }
-                }
+            // Remove from renderer
+            if (renderer != null) {
+                renderer.removeChunk(chunk);
             }
         }
     }
 
     /**
-     * ✅ FIXED - Better logging
+     * ✅ Mark neighbor chunks for mesh rebuild
      */
-    private void loadChunk(int chunkX, int chunkZ) {
-        ChunkPos pos = new ChunkPos(chunkX, chunkZ);
-        if (!chunks.containsKey(pos)) {
-            Chunk chunk = new Chunk(chunkX, chunkZ);
-            chunks.put(pos, chunk);
-
-            markNeighborsForRebuild(chunkX, chunkZ);
-
-            // ✅ Optional: Detailed logging (comment out for production)
-            // System.out.println("[World] Loaded chunk " + pos);
-        }
-    }
-
     private void markNeighborsForRebuild(int chunkX, int chunkZ) {
         int[][] neighbors = {
                 { chunkX - 1, chunkZ },
@@ -191,31 +249,39 @@ public class World {
         for (int[] neighbor : neighbors) {
             ChunkPos neighborPos = new ChunkPos(neighbor[0], neighbor[1]);
             Chunk neighborChunk = chunks.get(neighborPos);
-            if (neighborChunk != null) {
+            if (neighborChunk != null && neighborChunk.isReady()) {
                 neighborChunk.setNeedsRebuild(true);
             }
         }
     }
 
     /**
-     * ✅ FIXED - Better logging and cleanup
+     * ✅ Update skylight when time changes
      */
-    private void unloadChunk(ChunkPos pos) {
-        Chunk chunk = chunks.remove(pos);
-        if (chunk != null) {
-            // Cancel any pending lighting updates for this chunk
-            lightingEngine.cancelChunkUpdates(chunk);
+    public void updateSkylightForTimeChange() {
+        if (timeOfDay == null)
+            return;
 
-            // Remove from renderer
-            renderer.removeChunk(chunk);
-
-            // ✅ Optional: Detailed logging (comment out for production)
-            // System.out.println("[World] Unloaded chunk " + pos);
+        for (Chunk chunk : chunks.values()) {
+            if (chunk.isGenerated() && chunk.isLightInitialized()) {
+                lightingEngine.queueChunkForLightUpdate(chunk);
+            }
         }
     }
 
+    /**
+     * ✅ Update sun lighting
+     */
+    public void updateSunLight() {
+        if (lightingEngine != null) {
+            lightingEngine.updateSunLight();
+        }
+    }
+
+    // ========== BLOCK ACCESS ==========
+
     public GameBlock getBlock(int worldX, int worldY, int worldZ) {
-        if (worldY < 0 || worldY >= Chunk.CHUNK_HEIGHT) {
+        if (!Settings.isValidWorldY(worldY)) {
             return BlockRegistry.AIR;
         }
 
@@ -225,7 +291,7 @@ public class World {
         ChunkPos pos = new ChunkPos(chunkX, chunkZ);
         Chunk chunk = chunks.get(pos);
 
-        if (chunk == null) {
+        if (chunk == null || !chunk.isGenerated()) {
             return BlockRegistry.AIR;
         }
 
@@ -236,7 +302,7 @@ public class World {
     }
 
     public void setBlock(int worldX, int worldY, int worldZ, GameBlock block) {
-        if (worldY < 0 || worldY >= Chunk.CHUNK_HEIGHT) {
+        if (!Settings.isValidWorldY(worldY)) {
             return;
         }
 
@@ -246,7 +312,7 @@ public class World {
         ChunkPos pos = new ChunkPos(chunkX, chunkZ);
         Chunk chunk = chunks.get(pos);
 
-        if (chunk != null) {
+        if (chunk != null && chunk.isGenerated()) {
             int localX = Math.floorMod(worldX, Chunk.CHUNK_SIZE);
             int localZ = Math.floorMod(worldZ, Chunk.CHUNK_SIZE);
 
@@ -265,7 +331,7 @@ public class World {
         }
     }
 
-    // ========== Light Query Methods ==========
+    // ========== LIGHT ACCESS ==========
 
     public int getLight(int worldX, int worldY, int worldZ) {
         int skyLight = getSkyLight(worldX, worldY, worldZ);
@@ -274,9 +340,8 @@ public class World {
     }
 
     public int getSkyLight(int worldX, int worldY, int worldZ) {
-        if (worldY < 0 || worldY >= Chunk.CHUNK_HEIGHT) {
+        if (!Settings.isValidWorldY(worldY))
             return 0;
-        }
 
         int chunkX = Math.floorDiv(worldX, Chunk.CHUNK_SIZE);
         int chunkZ = Math.floorDiv(worldZ, Chunk.CHUNK_SIZE);
@@ -284,9 +349,8 @@ public class World {
         ChunkPos pos = new ChunkPos(chunkX, chunkZ);
         Chunk chunk = chunks.get(pos);
 
-        if (chunk == null || !chunk.isLightInitialized()) {
+        if (chunk == null || !chunk.isLightInitialized())
             return 0;
-        }
 
         int localX = Math.floorMod(worldX, Chunk.CHUNK_SIZE);
         int localZ = Math.floorMod(worldZ, Chunk.CHUNK_SIZE);
@@ -295,9 +359,8 @@ public class World {
     }
 
     public int getBlockLight(int worldX, int worldY, int worldZ) {
-        if (worldY < 0 || worldY >= Chunk.CHUNK_HEIGHT) {
+        if (!Settings.isValidWorldY(worldY))
             return 0;
-        }
 
         int chunkX = Math.floorDiv(worldX, Chunk.CHUNK_SIZE);
         int chunkZ = Math.floorDiv(worldZ, Chunk.CHUNK_SIZE);
@@ -305,9 +368,8 @@ public class World {
         ChunkPos pos = new ChunkPos(chunkX, chunkZ);
         Chunk chunk = chunks.get(pos);
 
-        if (chunk == null || !chunk.isLightInitialized()) {
+        if (chunk == null || !chunk.isLightInitialized())
             return 0;
-        }
 
         int localX = Math.floorMod(worldX, Chunk.CHUNK_SIZE);
         int localZ = Math.floorMod(worldZ, Chunk.CHUNK_SIZE);
@@ -315,13 +377,14 @@ public class World {
         return chunk.getBlockLight(localX, worldY, localZ);
     }
 
-    // ========== Rendering ==========
+    // ========== RENDERING ==========
 
     public void render(Camera camera) {
         List<Chunk> visibleChunks = new ArrayList<>();
 
         for (Chunk chunk : chunks.values()) {
-            if (chunk.isGenerated()) {
+            // Only render chunks that are fully ready (terrain + lighting)
+            if (chunk.isReady()) {
                 float chunkCenterX = chunk.getChunkX() * Chunk.CHUNK_SIZE + Chunk.CHUNK_SIZE / 2.0f;
                 float chunkCenterZ = chunk.getChunkZ() * Chunk.CHUNK_SIZE + Chunk.CHUNK_SIZE / 2.0f;
 
@@ -341,51 +404,61 @@ public class World {
         renderer.renderWaterPass(visibleChunks, camera);
     }
 
+    // ========== UTILITY ==========
+
     public Chunk getChunk(int chunkX, int chunkZ) {
         return chunks.get(new ChunkPos(chunkX, chunkZ));
     }
 
-    /**
-     * ✅ VERIFIED - This is correct, returns current chunk count
-     */
     public int getLoadedChunkCount() {
         return chunks.size();
     }
 
-    /**
-     * ✅ NEW - Get render distance
-     */
     public int getRenderDistance() {
         return renderDistance;
     }
 
-    /**
-     * ✅ NEW - Debug method to verify chunk system
-     */
-    public void debugChunkSystem(int playerChunkX, int playerChunkZ) {
-        System.out.println("=== CHUNK DEBUG ===");
-        System.out.println("Player at chunk: [" + playerChunkX + ", " + playerChunkZ + "]");
-        System.out.println("Render distance: " + renderDistance);
-        System.out.println("Total chunks: " + chunks.size());
-        System.out.println("Chunks map: " + chunks.keySet());
+    public void setRenderDistance(int distance) {
+        this.renderDistance = Math.max(2, Math.min(32, distance));
+    }
 
-        // Calculate expected chunks
-        int expectedChunks = 0;
-        for (int x = playerChunkX - renderDistance; x <= playerChunkX + renderDistance; x++) {
-            for (int z = playerChunkZ - renderDistance; z <= playerChunkZ + renderDistance; z++) {
-                int dx = x - playerChunkX;
-                int dz = z - playerChunkZ;
-                if (dx * dx + dz * dz <= renderDistance * renderDistance) {
-                    expectedChunks++;
-                }
+    /**
+     * ✅ Get generation stats
+     */
+    public int getPendingGenerations() {
+        return generationManager != null ? generationManager.getPendingCount() : 0;
+    }
+
+    public int getActiveGenerationThreads() {
+        return generationManager != null ? generationManager.getActiveThreads() : 0;
+    }
+
+    /**
+     * ✅ Debug logging
+     */
+    private void logChunkCount() {
+        int currentCount = chunks.size();
+        long now = System.currentTimeMillis();
+
+        if (currentCount != lastChunkCount || (now - lastChunkCountLog > CHUNK_LOG_INTERVAL)) {
+            if (currentCount != lastChunkCount && Settings.DEBUG_CHUNK_LOADING) {
+                System.out.println(String.format(
+                        "[World] Chunks: %d -> %d (%+d) | Pending: %d | Gen Threads: %d",
+                        lastChunkCount, currentCount, (currentCount - lastChunkCount),
+                        getPendingGenerations(), getActiveGenerationThreads()));
             }
+            lastChunkCount = currentCount;
+            lastChunkCountLog = now;
         }
-        System.out.println("Expected chunks: " + expectedChunks);
-        System.out.println("==================");
     }
 
     public void cleanup() {
         System.out.println("Cleaning up world (" + chunks.size() + " chunks)...");
+
+        // Shutdown generation manager
+        if (generationManager != null) {
+            generationManager.shutdown();
+        }
 
         if (lightingEngine != null) {
             lightingEngine.shutdown();
@@ -394,6 +467,8 @@ public class World {
         renderer.cleanup();
         chunks.clear();
     }
+
+    // ========== CHUNK POSITION ==========
 
     private static class ChunkPos {
         final int x, z;
