@@ -68,10 +68,12 @@ util
 util/Screenshot.java
 util/SimplexNoise.java
 world
+world/Biome.java
 world/BlockType.java
 world/Chunk.java
 world/ChunkGenerationManager.java
 world/ChunkLoadManager.java
+world/ChunkSection.java
 world/ChunkState.java
 world/Direction.java
 world/GameMode.java

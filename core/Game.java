@@ -38,6 +38,7 @@ import static org.lwjgl.system.MemoryUtil.*;
 
 /**
  * ✅ Main game class with Menu System Integration
+ * ✅ MINECRAFT-STYLE LIGHTING: Time change doesn't rebuild meshes!
  */
 public class Game {
     private long window;
@@ -221,13 +222,12 @@ public class Game {
         cleanupWorld();
         currentWorldInfo = worldInfo;
 
-        // ✅ PERBAIKAN: World constructor hanya menerima TimeOfDay
+        // ✅ Create TimeOfDay first
         timeOfDay = new TimeOfDay();
+
+        // ✅ Create World with TimeOfDay
         world = new World(timeOfDay);
         world.setSeed(worldInfo.getSeed());
-
-        // Note: Seed handling mungkin dilakukan di dalam Chunk generation
-        // Jika perlu set seed, tambahkan method setSeed() di World.java
 
         player = new Player(world, window);
         player.setPosition(0, 80, 0);
@@ -455,7 +455,8 @@ public class Game {
     }
 
     /**
-     * ✅ Physics and world updates (20 TPS)
+     * ✅ MINECRAFT-STYLE: Physics and world updates (20 TPS)
+     * Time change ONLY updates renderer brightness, NOT mesh!
      */
     private void updatePhysics() {
         if (!worldLoaded || player == null || world == null)
@@ -463,21 +464,39 @@ public class Game {
 
         player.tick();
 
-        int oldSkylight = timeOfDay.getSkylightLevel();
+        // ✅ MINECRAFT-STYLE FIX: Update time-of-day
         timeOfDay.update();
-        int newSkylight = timeOfDay.getSkylightLevel();
 
-        if (oldSkylight != newSkylight) {
-            world.updateSkylightForTimeChange();
+        // ✅ FIX: Update renderer brightness multiplier (NO MESH REBUILD!)
+        if (world.getRenderer() != null) {
+            float brightness = timeOfDay.getBrightness();
+            world.getRenderer().setTimeOfDayBrightness(brightness);
         }
 
+        // ❌ REMOVED: Don't update skylight values for time change!
+        // Skylight values (0-15) are STATIC based on block height
+        // Only brightness MULTIPLIER changes with time
+        //
+        // OLD CODE (CAUSED LAG):
+        // int oldSkylight = timeOfDay.getSkylightLevel();
+        // timeOfDay.update();
+        // int newSkylight = timeOfDay.getSkylightLevel();
+        // if (oldSkylight != newSkylight) {
+        // world.updateSkylightForTimeChange(); // ❌ This rebuilt all meshes!
+        // }
+
+        // ✅ Update sun direction (for future directional shadows)
         world.updateSunLight();
+
+        // ✅ Process lighting updates (block light changes only)
         world.getLightingEngine().update();
 
+        // ✅ Update sky renderer
         if (skyRenderer != null) {
             skyRenderer.update(1.0f / Settings.TARGET_TPS);
         }
 
+        // ✅ Update chunk loading/unloading
         int playerChunkX = (int) Math.floor(player.getX() / 16);
         int playerChunkZ = (int) Math.floor(player.getZ() / 16);
         world.updateChunks(playerChunkX, playerChunkZ);
@@ -735,7 +754,6 @@ public class Game {
             }
         }
 
-        // ✅ PERBAIKAN: Chat dengan method yang benar
         if (chatOverlay != null) {
             if (input.isKeyPressed(GLFW_KEY_T)) {
                 chatOverlay.openChat();
@@ -759,11 +777,14 @@ public class Game {
     }
 
     private void handleF3Combinations() {
+        // ✅ FIX: F3+A now only rebuilds geometry, not lighting
         if (input.isKeyPressed(GLFW_KEY_A)) {
             if (world != null) {
+                // Force geometry rebuild for all chunks
                 for (com.mineshaft.world.Chunk chunk : world.getChunks()) {
-                    chunk.setNeedsRebuild(true);
+                    chunk.setNeedsGeometryRebuild(true);
                 }
+                System.out.println("[Game] Force rebuilding all chunk meshes (geometry only)");
             }
         }
 

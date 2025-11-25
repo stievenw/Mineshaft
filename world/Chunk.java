@@ -9,7 +9,31 @@ import com.mineshaft.util.SimplexNoise;
 import java.util.Random;
 
 /**
- * ✅ ASYNC-READY Chunk with state management
+ * ✅ ASYNC-READY Chunk v3.0 - Minecraft-Style Lighting System
+ * 
+ * ============================================================================
+ * MINECRAFT-STYLE LIGHTING CONCEPT:
+ * ============================================================================
+ * 
+ * 1. LIGHT VALUES (0-15) are STATIC per-block:
+ * - Skylight: Can this block see the sky? (shadow propagation)
+ * - Blocklight: Is there a torch/glowstone nearby?
+ * 
+ * 2. LIGHT VALUES DO NOT CHANGE WITH TIME OF DAY!
+ * - Time-of-day brightness is applied at RENDER time (via glColor)
+ * - NO mesh rebuild when time changes!
+ * 
+ * 3. GEOMETRY REBUILD only when:
+ * - Block shape changes (place/remove)
+ * - Chunk first loads
+ * 
+ * 4. LIGHTING-ONLY UPDATE when:
+ * - Block opacity changes (affects shadow propagation)
+ * - Light source placed/removed
+ * - But this doesn't require full geometry rebuild!
+ * 
+ * ============================================================================
+ * 
  * ✅ FIXED: Proper Y=-64 to Y=320 support (Minecraft 1.18+ standard)
  * ⚡ Terrain generation can be called from background thread
  */
@@ -23,7 +47,29 @@ public class Chunk {
     private ChunkSection[] sections; // 24 sections (Y=-64 to Y=320)
 
     private int chunkX, chunkZ;
-    private boolean needsRebuild = true;
+
+    // ========== MINECRAFT-STYLE DIRTY FLAGS ==========
+    /**
+     * ✅ GEOMETRY REBUILD needed when block SHAPE changes:
+     * - Block placed/removed
+     * - Initial chunk generation
+     * 
+     * This triggers full mesh rebuild for affected sections.
+     */
+    private boolean needsGeometryRebuild = true;
+
+    /**
+     * ✅ LIGHTING UPDATE needed when light VALUES change:
+     * - Light source placed/removed (torch, glowstone)
+     * - Opacity changed (solid block blocking skylight)
+     * 
+     * This updates light arrays but may not need full mesh rebuild
+     * if the lighting system supports dynamic updates.
+     * 
+     * NOTE: Time-of-day changes do NOT set this flag!
+     * Time brightness is applied at render time via glColor.
+     */
+    private boolean needsLightingUpdate = true;
 
     // ✅ Async generation support
     private volatile ChunkState state = ChunkState.EMPTY;
@@ -56,7 +102,11 @@ public class Chunk {
         try {
             generateTerrain();
             state = ChunkState.GENERATED;
-            needsRebuild = true;
+
+            // ✅ Mark for initial mesh generation
+            needsGeometryRebuild = true;
+            needsLightingUpdate = true;
+
         } catch (Exception e) {
             System.err.println("Error generating chunk [" + chunkX + ", " + chunkZ + "]: " + e.getMessage());
             e.printStackTrace();
@@ -92,7 +142,7 @@ public class Chunk {
         this.state = state;
     }
 
-    // ========== \u2705 SECTION MANAGEMENT ==========
+    // ========== ✅ SECTION MANAGEMENT ==========
 
     /**
      * Get section index from world Y coordinate
@@ -120,7 +170,7 @@ public class Chunk {
         }
 
         if (sections[sectionIndex] == null) {
-            sections[sectionIndex] = new ChunkSection(sectionIndex);
+            sections[sectionIndex] = new ChunkSection(this, sectionIndex);
         }
 
         return sections[sectionIndex];
@@ -131,6 +181,89 @@ public class Chunk {
      */
     private int toLocalY(int worldY) {
         return (worldY - Settings.WORLD_MIN_Y) % ChunkSection.SECTION_SIZE;
+    }
+
+    // ========== ✅ MESH REBUILD FLAGS (MINECRAFT-STYLE) ==========
+
+    /**
+     * ✅ Check if any section needs mesh rebuild
+     */
+    public boolean needsMeshRebuild() {
+        return needsGeometryRebuild || needsLightingUpdate;
+    }
+
+    /**
+     * ✅ Check if geometry rebuild is needed (block shape changed)
+     */
+    public boolean needsGeometryRebuild() {
+        return needsGeometryRebuild;
+    }
+
+    /**
+     * ✅ Check if only lighting update is needed (no geometry change)
+     * 
+     * This is used to optimize: if only lighting changed, we might
+     * be able to update without full mesh rebuild in some implementations.
+     */
+    public boolean needsOnlyLightingUpdate() {
+        return needsLightingUpdate && !needsGeometryRebuild;
+    }
+
+    /**
+     * ✅ Check if lighting update is needed
+     */
+    public boolean needsLightingUpdate() {
+        return needsLightingUpdate;
+    }
+
+    /**
+     * ✅ Set geometry rebuild flag
+     */
+    public void setNeedsGeometryRebuild(boolean needs) {
+        this.needsGeometryRebuild = needs;
+
+        // If geometry changes, also mark all non-empty sections
+        if (needs) {
+            for (ChunkSection section : sections) {
+                if (section != null && !section.isEmpty()) {
+                    section.setNeedsGeometryRebuild(true);
+                }
+            }
+        }
+    }
+
+    /**
+     * ✅ Set lighting update flag
+     * 
+     * NOTE: This is for BLOCK lighting changes (torch, shadow propagation),
+     * NOT for time-of-day changes! Time brightness is applied at render time.
+     */
+    public void setNeedsLightingUpdate(boolean needs) {
+        this.needsLightingUpdate = needs;
+
+        // Also mark sections
+        if (needs) {
+            for (ChunkSection section : sections) {
+                if (section != null && !section.isEmpty()) {
+                    section.setNeedsLightingUpdate(true);
+                }
+            }
+        }
+    }
+
+    /**
+     * ✅ Clear all rebuild flags (after mesh has been rebuilt)
+     */
+    public void clearRebuildFlags() {
+        this.needsGeometryRebuild = false;
+        this.needsLightingUpdate = false;
+
+        for (ChunkSection section : sections) {
+            if (section != null) {
+                section.setNeedsGeometryRebuild(false);
+                section.setNeedsLightingUpdate(false);
+            }
+        }
     }
 
     // ========== ✅ TERRAIN GENERATION (FIXED Y RANGE) ==========
@@ -154,12 +287,10 @@ public class Chunk {
         }
 
         // ✅ Generate blocks for ENTIRE height range (Y=-64 to Y=319)
-        // Sections created only when needed (lazy allocation)
         for (int x = 0; x < CHUNK_SIZE; x++) {
             for (int z = 0; z < CHUNK_SIZE; z++) {
                 int height = heights[x][z];
 
-                // ✅ Loop through ALL Y levels from -64 to 319
                 for (int worldY = Settings.WORLD_MIN_Y; worldY <= Settings.WORLD_MAX_Y; worldY++) {
                     GameBlock block;
 
@@ -173,7 +304,7 @@ public class Chunk {
                         double bedrockChance = 1.0 - (distanceFromBottom / (double) Settings.BEDROCK_LAYERS);
                         block = random.nextDouble() < bedrockChance ? BlockRegistry.BEDROCK : BlockRegistry.STONE;
                     }
-                    // ✅ Above terrain = air (don't allocate section for empty sky)
+                    // ✅ Above terrain = air
                     else if (worldY > height) {
                         block = BlockRegistry.AIR;
                     }
@@ -184,10 +315,8 @@ public class Chunk {
                     // ✅ Subsurface (3-5 blocks of dirt/sand below surface)
                     else if (worldY > height - 5) {
                         if (height >= Settings.SEA_LEVEL) {
-                            // Land: dirt layers
                             block = BlockRegistry.DIRT;
                         } else {
-                            // Ocean floor: sand/gravel mix
                             block = random.nextDouble() > 0.5 ? BlockRegistry.SAND : BlockRegistry.GRAVEL;
                         }
                     }
@@ -223,7 +352,6 @@ public class Chunk {
 
                 // ✅ Trees (sparse, only on land)
                 if (height >= Settings.SEA_LEVEL + 1 && height < 85) {
-                    // 2% chance on plains
                     if (random.nextDouble() < 0.02) {
                         generateTree(x, height + 1, z, random);
                     }
@@ -236,28 +364,21 @@ public class Chunk {
 
     /**
      * ✅ SIMPLIFIED: Smooth terrain height generation
-     * Returns: Y=-58 (ocean floor) to Y=180 (mountain peaks)
      */
     private int getTerrainHeight(int worldX, int worldZ) {
-        // Large-scale continent noise (smooth ocean vs land)
         double continentScale = 0.001;
         double continent = SimplexNoise.noise(worldX * continentScale, worldZ * continentScale);
 
-        // Medium-scale terrain variation
         double terrainScale = 0.005;
         double terrain = SimplexNoise.noise(worldX * terrainScale, worldZ * terrainScale);
 
-        // Fine detail
         double detailScale = 0.02;
         double detail = SimplexNoise.noise(worldX * detailScale, worldZ * detailScale);
 
-        // Combine noises with weighted influence
         double combined = continent * 50 + terrain * 20 + detail * 5;
 
-        // Base height at sea level
         int baseHeight = Settings.SEA_LEVEL + (int) combined;
 
-        // Clamp to reasonable range (allow ocean floors down to near bedrock)
         return Math.max(-58, Math.min(180, baseHeight));
     }
 
@@ -265,49 +386,31 @@ public class Chunk {
      * ✅ SIMPLIFIED: Get surface block based on height only
      */
     private GameBlock getSurfaceBlock(int height, Random random) {
-        // Ocean floor
         if (height < Settings.SEA_LEVEL - 5) {
             return random.nextDouble() > 0.5 ? BlockRegistry.GRAVEL : BlockRegistry.SAND;
-        }
-        // Shallow ocean to beach
-        else if (height < Settings.SEA_LEVEL) {
+        } else if (height < Settings.SEA_LEVEL) {
             return BlockRegistry.SAND;
-        }
-        // Beach (just above sea level)
-        else if (height <= Settings.SEA_LEVEL + 2) {
+        } else if (height <= Settings.SEA_LEVEL + 2) {
             return BlockRegistry.SAND;
-        }
-        // High mountains (stone peaks)
-        else if (height > 90) {
+        } else if (height > 90) {
             return BlockRegistry.STONE;
-        }
-        // Normal grass land
-        else {
+        } else {
             return BlockRegistry.GRASS_BLOCK;
         }
     }
 
     /**
      * ✅ FIXED: Ore generation with proper Y distribution (1.18+ style)
-     * 
-     * Distribution matches Minecraft 1.18+ ore generation:
-     * - Coal: Y=-64 to Y=136 (common throughout)
-     * - Iron: Y=-64 to Y=72 (peak at Y=16)
-     * - Gold: Y=-64 to Y=32 (peak at Y=-16)
-     * - Diamond: Y=-64 to Y=16 (peak at Y=-59)
-     * 
-     * Note: Deepslate variants will be added in future update
      */
     private GameBlock generateOre(int worldY, Random random) {
-        // ✅ Coal: Y=-64 to Y=136 (common throughout)
+        // Coal: Y=-64 to Y=136
         if (worldY >= -64 && worldY <= 136 && random.nextDouble() < 0.012) {
             return BlockRegistry.COAL_ORE;
         }
 
-        // ✅ Iron: Y=-64 to Y=72 (peak at Y=16)
+        // Iron: Y=-64 to Y=72
         if (worldY >= -64 && worldY <= 72) {
             double ironChance = 0.008;
-            // More common in mid-range (Y=0 to Y=32)
             if (worldY >= 0 && worldY <= 32) {
                 ironChance = 0.012;
             }
@@ -316,10 +419,9 @@ public class Chunk {
             }
         }
 
-        // ✅ Gold: Y=-64 to Y=32 (peak at Y=-16)
+        // Gold: Y=-64 to Y=32
         if (worldY >= -64 && worldY <= 32) {
             double goldChance = 0.004;
-            // More common below Y=0 (will be deepslate layer in future)
             if (worldY >= -32 && worldY <= 0) {
                 goldChance = 0.006;
             }
@@ -328,10 +430,9 @@ public class Chunk {
             }
         }
 
-        // ✅ Diamond: Y=-64 to Y=16 (peak at Y=-59)
+        // Diamond: Y=-64 to Y=16
         if (worldY >= -64 && worldY <= 16) {
             double diamondChance = 0.0015;
-            // Much more common in deep layer (Y=-64 to Y=-32)
             if (worldY >= -64 && worldY <= -32) {
                 diamondChance = 0.003;
             }
@@ -340,7 +441,6 @@ public class Chunk {
             }
         }
 
-        // ✅ Default: Stone below Y=0 will become deepslate in future
         return BlockRegistry.STONE;
     }
 
@@ -355,16 +455,14 @@ public class Chunk {
                 int worldX = chunkX * CHUNK_SIZE + x;
                 int worldZ = chunkZ * CHUNK_SIZE + z;
 
-                // ✅ Generate caves from just above bedrock to sea level
-                int minCaveY = Settings.BEDROCK_FLOOR + Settings.BEDROCK_LAYERS + 1; // Y=-58
-                int maxCaveY = Settings.SEA_LEVEL; // Y=63
+                int minCaveY = Settings.BEDROCK_FLOOR + Settings.BEDROCK_LAYERS + 1;
+                int maxCaveY = Settings.SEA_LEVEL;
 
                 for (int worldY = minCaveY; worldY <= maxCaveY; worldY++) {
                     int index = toIndex(worldY);
                     if (!isValidIndex(index))
                         continue;
 
-                    // 3D Perlin noise for cave generation
                     double caveNoise1 = SimplexNoise.noise(
                             worldX * 0.05,
                             (worldZ + worldY * 100) * 0.05);
@@ -375,17 +473,14 @@ public class Chunk {
 
                     double combinedNoise = (caveNoise1 + caveNoise2 * 0.5);
 
-                    // ✅ Create cave if noise threshold exceeded
                     if (combinedNoise > 0.7) {
                         GameBlock current = getBlock(x, worldY, z);
 
-                        // Don't replace bedrock or existing water
                         if (current != BlockRegistry.BEDROCK && current != BlockRegistry.WATER) {
-                            // Below Y=20: sometimes fill with water (flooded caves)
                             if (worldY < Settings.SEA_LEVEL - 43 && random.nextDouble() < 0.3) {
-                                setBlock(x, worldY, z, BlockRegistry.WATER);
+                                setBlockInternal(x, worldY, z, BlockRegistry.WATER);
                             } else {
-                                setBlock(x, worldY, z, BlockRegistry.AIR);
+                                setBlockInternal(x, worldY, z, BlockRegistry.AIR);
                             }
                         }
                     }
@@ -406,7 +501,7 @@ public class Chunk {
 
         // Trunk
         for (int i = 0; i < height; i++) {
-            setBlock(x, worldY + i, z, BlockRegistry.OAK_LOG);
+            setBlockInternal(x, worldY + i, z, BlockRegistry.OAK_LOG);
         }
 
         // Leaves
@@ -423,12 +518,10 @@ public class Chunk {
     }
 
     private boolean canPlaceTree(int x, int worldY, int z, int totalHeight) {
-        // Edge protection
         if (x < 2 || x > CHUNK_SIZE - 3 || z < 2 || z > CHUNK_SIZE - 3) {
             return false;
         }
 
-        // Check all blocks in tree space
         for (int y = 0; y < totalHeight; y++) {
             GameBlock check = getBlock(x, worldY + y, z);
             if (check != null && !check.isAir()) {
@@ -443,24 +536,34 @@ public class Chunk {
         if (x >= 0 && x < CHUNK_SIZE && z >= 0 && z < CHUNK_SIZE && Settings.isValidWorldY(worldY)) {
             GameBlock current = getBlock(x, worldY, z);
             if (current != null && current.isAir()) {
-                setBlock(x, worldY, z, block);
+                setBlockInternal(x, worldY, z, block);
             }
+        }
+    }
+
+    /**
+     * ✅ Internal block set (during generation, no flag updates)
+     */
+    private void setBlockInternal(int x, int worldY, int z, GameBlock block) {
+        if (!Settings.isValidWorldY(worldY) || x < 0 || x >= CHUNK_SIZE || z < 0 || z >= CHUNK_SIZE) {
+            return;
+        }
+
+        int sectionIndex = getSectionIndex(worldY);
+        ChunkSection section = getOrCreateSection(sectionIndex);
+
+        if (section != null) {
+            int localY = toLocalY(worldY);
+            section.setBlock(x, localY, z, block);
         }
     }
 
     // ========== ✅ COORDINATE CONVERSION ==========
 
-    /**
-     * ✅ Convert world Y to array index
-     * Example: Y=-64 -> 0, Y=0 -> 64, Y=319 -> 383
-     */
     private int toIndex(int worldY) {
         return Settings.worldYToIndex(worldY);
     }
 
-    /**
-     * ✅ Check if array index is valid (0 to 383)
-     */
     private boolean isValidIndex(int index) {
         return index >= 0 && index < CHUNK_HEIGHT;
     }
@@ -469,6 +572,10 @@ public class Chunk {
 
     /**
      * ✅ Get skylight level (0-15) at world Y coordinate
+     * 
+     * NOTE: This returns the STATIC skylight value.
+     * It does NOT change with time of day!
+     * Time brightness is applied at render time.
      */
     public int getSkyLight(int x, int worldY, int z) {
         if (x < 0 || x >= CHUNK_SIZE || z < 0 || z >= CHUNK_SIZE || !Settings.isValidWorldY(worldY)) {
@@ -479,7 +586,8 @@ public class Chunk {
         ChunkSection section = getSection(sectionIndex);
 
         if (section == null) {
-            return 15; // Empty sections are fully lit
+            // ✅ MINECRAFT-STYLE: Empty sections above terrain have full skylight
+            return 15;
         }
 
         int localY = toLocalY(worldY);
@@ -539,12 +647,30 @@ public class Chunk {
         }
     }
 
+    /**
+     * ✅ Get combined light (max of skylight and blocklight)
+     * 
+     * Returns RAW light value (0-15), NOT time-adjusted!
+     */
+    public int getCombinedLight(int x, int worldY, int z) {
+        int sky = getSkyLight(x, worldY, z);
+        int block = getBlockLight(x, worldY, z);
+        return Math.max(sky, block);
+    }
+
     public boolean isLightInitialized() {
         return lightInitialized;
     }
 
     public void setLightInitialized(boolean initialized) {
         this.lightInitialized = initialized;
+
+        if (initialized) {
+            // ✅ When lighting is initialized, move to LIGHT_PENDING state
+            if (state == ChunkState.GENERATED) {
+                state = ChunkState.LIGHT_PENDING;
+            }
+        }
     }
 
     // ========== BLOCK ACCESS ==========
@@ -569,7 +695,11 @@ public class Chunk {
     }
 
     /**
-     * ✅ Set block at world Y coordinate
+     * ✅ REVISED: Set block with proper Minecraft-style flag handling
+     * 
+     * This method properly separates:
+     * - Geometry changes (block shape changed)
+     * - Lighting changes (opacity changed, affecting shadows)
      */
     public void setBlock(int x, int worldY, int z, GameBlock block) {
         if (!Settings.isValidWorldY(worldY) || x < 0 || x >= CHUNK_SIZE || z < 0 || z >= CHUNK_SIZE) {
@@ -581,13 +711,74 @@ public class Chunk {
 
         if (section != null) {
             int localY = toLocalY(worldY);
+
+            // ✅ Get old block to determine what changed
+            GameBlock oldBlock = section.getBlock(x, localY, z);
+
+            // Set the new block
             section.setBlock(x, localY, z, block);
-            needsRebuild = true;
+
+            // ========== DETERMINE WHAT CHANGED ==========
+
+            // ✅ Check if block SHAPE changed (different block type)
+            boolean shapeChanged = (oldBlock == null && block != null) ||
+                    (oldBlock != null && block == null) ||
+                    (oldBlock != null && block != null && oldBlock != block);
+
+            // ✅ Check if block OPACITY changed (affects shadow propagation)
+            boolean oldBlocksLight = oldBlock != null && !oldBlock.isAir() && oldBlock.isSolid();
+            boolean newBlocksLight = block != null && !block.isAir() && block.isSolid();
+            boolean opacityChanged = (oldBlocksLight != newBlocksLight);
+
+            // ✅ Check if LIGHT EMISSION changed
+            int oldLightLevel = (oldBlock != null) ? oldBlock.getLightLevel() : 0;
+            int newLightLevel = (block != null) ? block.getLightLevel() : 0;
+            boolean lightEmissionChanged = (oldLightLevel != newLightLevel);
+
+            // ========== SET APPROPRIATE FLAGS ==========
+
+            if (shapeChanged) {
+                // ✅ Geometry changed - need mesh rebuild
+                section.setNeedsGeometryRebuild(true);
+                needsGeometryRebuild = true;
+            }
+
+            if (opacityChanged) {
+                // ✅ Opacity changed - affects shadow propagation
+                section.setNeedsLightingUpdate(true);
+                needsLightingUpdate = true;
+
+                // ✅ Mark sections BELOW for shadow update
+                // (shadow propagates downward from blocked skylight)
+                markSectionsBelowForShadowUpdate(sectionIndex);
+            }
+
+            if (lightEmissionChanged) {
+                // ✅ Light source placed/removed - need light propagation update
+                section.setNeedsLightingUpdate(true);
+                needsLightingUpdate = true;
+            }
         }
     }
 
     /**
-     * ✅ Get block by array index (for internal use - deprecated, use getBlock)
+     * ✅ Mark all sections below for rebuild when shadow/light changes
+     * 
+     * Called when an opaque block is placed or removed, affecting skylight
+     * propagation down the column.
+     */
+    private void markSectionsBelowForShadowUpdate(int fromSectionIndex) {
+        for (int i = fromSectionIndex - 1; i >= 0; i--) {
+            ChunkSection belowSection = sections[i];
+            if (belowSection != null && !belowSection.isEmpty()) {
+                belowSection.setNeedsLightingUpdate(true);
+                belowSection.setNeedsGeometryRebuild(true); // Need to update vertex colors
+            }
+        }
+    }
+
+    /**
+     * ✅ Get block by array index (for internal use)
      */
     public GameBlock getBlockByIndex(int x, int index, int z) {
         int worldY = Settings.indexToWorldY(index);
@@ -604,11 +795,35 @@ public class Chunk {
         return chunkZ;
     }
 
-    public boolean needsRebuild() {
-        return needsRebuild;
+    /**
+     * ✅ Get count of allocated (non-empty) sections
+     */
+    public int getAllocatedSectionCount() {
+        int count = 0;
+        for (ChunkSection section : sections) {
+            if (section != null && !section.isEmpty()) {
+                count++;
+            }
+        }
+        return count;
     }
 
-    public void setNeedsRebuild(boolean needsRebuild) {
-        this.needsRebuild = needsRebuild;
+    /**
+     * ✅ Get total block count (approximate, for debugging)
+     */
+    public int getBlockCount() {
+        int count = 0;
+        for (ChunkSection section : sections) {
+            if (section != null) {
+                count += section.getBlockCount();
+            }
+        }
+        return count;
+    }
+
+    @Override
+    public String toString() {
+        return String.format("Chunk[%d, %d] state=%s sections=%d blocks=%d",
+                chunkX, chunkZ, state, getAllocatedSectionCount(), getBlockCount());
     }
 }

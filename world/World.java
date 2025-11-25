@@ -12,14 +12,29 @@ import com.mineshaft.world.lighting.LightingEngine;
 import java.util.*;
 
 /**
- * ⚡ OPTIMIZED World with Async Generation & Lighting
- * ✅ Multi-threaded terrain generation
- * ✅ Progressive chunk loading
- * ✅ No FPS drops
+ * ⚡ OPTIMIZED World v3.0 - Minecraft-Style Lighting System
+ * 
+ * ============================================================================
+ * MINECRAFT-STYLE LIGHTING CONCEPT:
+ * ============================================================================
+ * 
+ * 1. LIGHT VALUES (0-15) are STATIC and stored per-block:
+ * - Skylight: Always 15 for blocks that can see the sky
+ * - Blocklight: Based on nearby light sources (torches, etc.)
+ * 
+ * 2. LIGHT VALUES DO NOT CHANGE WITH TIME OF DAY!
+ * - Time change only affects RENDER brightness, not light values
+ * - ChunkRenderer.setTimeOfDayBrightness() handles this
+ * - NO mesh rebuild when time changes!
+ * 
+ * 3. MESH REBUILD only happens when:
+ * - Block is placed/removed (geometry + shadow propagation)
+ * - Chunk first loads
+ * 
+ * ============================================================================
  */
 public class World {
     private Map<ChunkPos, Chunk> chunks = new HashMap<>();
-    // ✅ NEW: Seed handling for world generation
     private long seed;
     private ChunkRenderer renderer = new ChunkRenderer();
     private LightingEngine lightingEngine;
@@ -38,10 +53,15 @@ public class World {
         renderer.setWorld(this);
         lightingEngine = new LightingEngine(this, timeOfDay);
         renderer.setLightingEngine(lightingEngine);
-        // Initialize async generation system
         generationManager = new ChunkGenerationManager();
 
-        System.out.println("World created (render distance: " + renderDistance + " chunks)");
+        // ✅ Initialize renderer with current time brightness
+        if (timeOfDay != null) {
+            renderer.setTimeOfDayBrightness(timeOfDay.getBrightness());
+        }
+
+        System.out.println(
+                "[World] Created with Minecraft-style lighting (render distance: " + renderDistance + " chunks)");
     }
 
     /**
@@ -73,6 +93,31 @@ public class World {
     public Collection<Chunk> getChunks() {
         return chunks.values();
     }
+
+    // ========== TIME-OF-DAY BRIGHTNESS (NEW!) ==========
+
+    /**
+     * ✅ NEW: Update time-of-day brightness for rendering
+     * 
+     * This is called from Game.java when TimeOfDay updates.
+     * It ONLY updates the render brightness - NO mesh rebuild!
+     * 
+     * @param brightness The brightness multiplier (0.0-1.0)
+     */
+    public void setTimeOfDayBrightness(float brightness) {
+        if (renderer != null) {
+            renderer.setTimeOfDayBrightness(brightness);
+        }
+    }
+
+    /**
+     * ✅ NEW: Get current time-of-day brightness
+     */
+    public float getTimeOfDayBrightness() {
+        return renderer != null ? renderer.getTimeOfDayBrightness() : 1.0f;
+    }
+
+    // ========== CHUNK MANAGEMENT ==========
 
     /**
      * ✅ OPTIMIZED - Async chunk loading
@@ -157,22 +202,25 @@ public class World {
     }
 
     /**
-     * ✅ Initialize lighting for newly generated chunks
+     * ✅ REVISED: Initialize lighting for newly generated chunks
+     * 
+     * MINECRAFT-STYLE: Skylight is always 15 (full) - time brightness is applied at
+     * render time
      */
     private void updateLighting() {
-        int skylightLevel = (timeOfDay != null) ? timeOfDay.getSkylightLevel() : 15;
-
         for (Chunk chunk : chunks.values()) {
             // Only process chunks that have terrain generated but no lighting yet
             if (chunk.getState() == ChunkState.LIGHT_PENDING && !chunk.isLightInitialized()) {
-                lightingEngine.initializeSkylightForChunk(chunk, skylightLevel);
+                // ✅ MINECRAFT-STYLE: Always use full skylight (15)
+                // Time-of-day brightness is applied by ChunkRenderer, not here
+                lightingEngine.initializeSkylightForChunk(chunk);
                 lightingEngine.initializeBlocklightForChunk(chunk);
 
                 chunk.setLightInitialized(true);
                 chunk.setState(ChunkState.READY);
-                chunk.setNeedsRebuild(true);
+                chunk.setNeedsGeometryRebuild(true); // Initial mesh generation
 
-                // Mark neighbors for rebuild
+                // Mark neighbors for rebuild (edge seams)
                 markNeighborsForRebuild(chunk.getChunkX(), chunk.getChunkZ());
             }
         }
@@ -205,12 +253,12 @@ public class World {
 
             // Initialize lighting after generation
             if (chunk.isGenerated() && !chunk.isLightInitialized()) {
-                int skylightLevel = (timeOfDay != null) ? timeOfDay.getSkylightLevel() : 15;
-                lightingEngine.initializeSkylightForChunk(chunk, skylightLevel);
+                // ✅ MINECRAFT-STYLE: Always use full skylight
+                lightingEngine.initializeSkylightForChunk(chunk);
                 lightingEngine.initializeBlocklightForChunk(chunk);
                 chunk.setLightInitialized(true);
                 chunk.setState(ChunkState.READY);
-                chunk.setNeedsRebuild(true);
+                chunk.setNeedsGeometryRebuild(true); // Need initial mesh
             }
         }
     }
@@ -223,12 +271,10 @@ public class World {
         Chunk chunk = chunks.remove(pos);
 
         if (chunk != null) {
-            // Cancel any pending lighting updates
             if (lightingEngine != null) {
                 lightingEngine.cancelChunkUpdates(chunk);
             }
 
-            // Remove from renderer
             if (renderer != null) {
                 renderer.removeChunk(chunk);
             }
@@ -250,27 +296,58 @@ public class World {
             ChunkPos neighborPos = new ChunkPos(neighbor[0], neighbor[1]);
             Chunk neighborChunk = chunks.get(neighborPos);
             if (neighborChunk != null && neighborChunk.isReady()) {
-                neighborChunk.setNeedsRebuild(true);
+                neighborChunk.setNeedsGeometryRebuild(true);
             }
         }
     }
 
+    // ========== SKYLIGHT UPDATE METHODS ==========
+
     /**
-     * ✅ Update skylight when time changes
+     * ✅ NEW: Update skylight when blocks change (shadow propagation)
+     * 
+     * Called when a block is placed/removed that affects shadow propagation.
+     * This DOES trigger lighting recalculation and mesh rebuild.
      */
-    public void updateSkylightForTimeChange() {
-        if (timeOfDay == null)
-            return;
-
-        for (Chunk chunk : chunks.values()) {
-            if (chunk.isGenerated() && chunk.isLightInitialized()) {
-                lightingEngine.queueChunkForLightUpdate(chunk);
-            }
+    public void updateSkylightForBlockChange(int chunkX, int chunkZ) {
+        Chunk chunk = getChunk(chunkX, chunkZ);
+        if (chunk != null && chunk.isGenerated() && chunk.isLightInitialized()) {
+            lightingEngine.queueChunkForLightUpdate(chunk);
         }
     }
 
     /**
-     * ✅ Update sun lighting
+     * ✅ NEW: Update skylight for block change at world coordinates
+     */
+    public void updateSkylightForBlockChangeAt(int worldX, int worldZ) {
+        int chunkX = Math.floorDiv(worldX, Chunk.CHUNK_SIZE);
+        int chunkZ = Math.floorDiv(worldZ, Chunk.CHUNK_SIZE);
+        updateSkylightForBlockChange(chunkX, chunkZ);
+    }
+
+    /**
+     * ✅ DEPRECATED: Time change should NOT trigger skylight update!
+     * 
+     * Skylight value (0-15) stays constant, only brightness multiplier changes.
+     * Time-of-day brightness is handled by ChunkRenderer.setTimeOfDayBrightness()
+     * 
+     * This method is kept for backward compatibility but does NOTHING.
+     * 
+     * @deprecated Use setTimeOfDayBrightness() instead for time changes
+     */
+    @Deprecated
+    public void updateSkylightForTimeChange() {
+        // ✅ DO NOTHING - time change is handled by
+        // ChunkRenderer.setTimeOfDayBrightness()
+        // Light values don't change, only the render brightness multiplier
+
+        if (Settings.DEBUG_MODE) {
+            System.out.println("[World] updateSkylightForTimeChange() called but ignored (Minecraft-style lighting)");
+        }
+    }
+
+    /**
+     * ✅ Update sun lighting direction (for visual effects only)
      */
     public void updateSunLight() {
         if (lightingEngine != null) {
@@ -301,6 +378,9 @@ public class World {
         return chunk.getBlock(localX, worldY, localZ);
     }
 
+    /**
+     * ✅ REVISED: Set block with proper lighting update
+     */
     public void setBlock(int worldX, int worldY, int worldZ, GameBlock block) {
         if (!Settings.isValidWorldY(worldY)) {
             return;
@@ -316,14 +396,29 @@ public class World {
             int localX = Math.floorMod(worldX, Chunk.CHUNK_SIZE);
             int localZ = Math.floorMod(worldZ, Chunk.CHUNK_SIZE);
 
+            // Get old block to check if lighting needs update
+            GameBlock oldBlock = chunk.getBlock(localX, worldY, localZ);
+
+            // Set the new block
             chunk.setBlock(localX, worldY, localZ, block);
 
+            // ✅ Update lighting based on block change
             if (block.isAir()) {
                 lightingEngine.onBlockRemoved(chunk, localX, worldY, localZ);
             } else {
                 lightingEngine.onBlockPlaced(chunk, localX, worldY, localZ, block);
             }
 
+            // ✅ Check if shadow propagation changed (solid block placed/removed)
+            boolean oldBlockedLight = oldBlock != null && oldBlock.isSolid() && !oldBlock.isAir();
+            boolean newBlockedLight = block != null && block.isSolid() && !block.isAir();
+
+            if (oldBlockedLight != newBlockedLight) {
+                // Shadow propagation changed - update skylight for this column
+                updateSkylightForBlockChange(chunkX, chunkZ);
+            }
+
+            // Mark neighbor chunks for rebuild if block is on edge
             if (localX == 0 || localX == Chunk.CHUNK_SIZE - 1 ||
                     localZ == 0 || localZ == Chunk.CHUNK_SIZE - 1) {
                 markNeighborsForRebuild(chunkX, chunkZ);
@@ -333,12 +428,20 @@ public class World {
 
     // ========== LIGHT ACCESS ==========
 
+    /**
+     * ✅ Get combined light value (max of skylight and blocklight)
+     * Returns RAW light value (0-15), NOT time-adjusted
+     */
     public int getLight(int worldX, int worldY, int worldZ) {
         int skyLight = getSkyLight(worldX, worldY, worldZ);
         int blockLight = getBlockLight(worldX, worldY, worldZ);
         return Math.max(skyLight, blockLight);
     }
 
+    /**
+     * ✅ Get skylight value (0-15)
+     * This is STATIC - doesn't change with time of day
+     */
     public int getSkyLight(int worldX, int worldY, int worldZ) {
         if (!Settings.isValidWorldY(worldY))
             return 0;
@@ -358,6 +461,9 @@ public class World {
         return chunk.getSkyLight(localX, worldY, localZ);
     }
 
+    /**
+     * ✅ Get blocklight value (0-15)
+     */
     public int getBlockLight(int worldX, int worldY, int worldZ) {
         if (!Settings.isValidWorldY(worldY))
             return 0;
@@ -375,6 +481,16 @@ public class World {
         int localZ = Math.floorMod(worldZ, Chunk.CHUNK_SIZE);
 
         return chunk.getBlockLight(localX, worldY, localZ);
+    }
+
+    /**
+     * ✅ NEW: Get effective brightness at position (light value * time brightness)
+     * This is what would actually be displayed on screen
+     */
+    public float getEffectiveBrightness(int worldX, int worldY, int worldZ) {
+        int lightValue = getLight(worldX, worldY, worldZ);
+        float baseBrightness = LightingEngine.getBrightness(lightValue);
+        return baseBrightness * getTimeOfDayBrightness();
     }
 
     // ========== RENDERING ==========
@@ -399,6 +515,7 @@ public class World {
             }
         }
 
+        // ✅ Time-of-day brightness is already applied in each render pass
         renderer.renderSolidPass(visibleChunks);
         renderer.renderTranslucentPass(visibleChunks, camera);
         renderer.renderWaterPass(visibleChunks, camera);
@@ -422,9 +539,6 @@ public class World {
         this.renderDistance = Math.max(2, Math.min(32, distance));
     }
 
-    /**
-     * ✅ Get generation stats
-     */
     public int getPendingGenerations() {
         return generationManager != null ? generationManager.getPendingCount() : 0;
     }
@@ -434,8 +548,12 @@ public class World {
     }
 
     /**
-     * ✅ Debug logging
+     * ✅ Get lighting engine pending updates
      */
+    public int getPendingLightUpdates() {
+        return lightingEngine != null ? lightingEngine.getPendingUpdatesCount() : 0;
+    }
+
     private void logChunkCount() {
         int currentCount = chunks.size();
         long now = System.currentTimeMillis();
@@ -443,9 +561,9 @@ public class World {
         if (currentCount != lastChunkCount || (now - lastChunkCountLog > CHUNK_LOG_INTERVAL)) {
             if (currentCount != lastChunkCount && Settings.DEBUG_CHUNK_LOADING) {
                 System.out.println(String.format(
-                        "[World] Chunks: %d -> %d (%+d) | Pending: %d | Gen Threads: %d",
+                        "[World] Chunks: %d -> %d (%+d) | Pending Gen: %d | Pending Light: %d | Brightness: %.2f",
                         lastChunkCount, currentCount, (currentCount - lastChunkCount),
-                        getPendingGenerations(), getActiveGenerationThreads()));
+                        getPendingGenerations(), getPendingLightUpdates(), getTimeOfDayBrightness()));
             }
             lastChunkCount = currentCount;
             lastChunkCountLog = now;
@@ -453,9 +571,8 @@ public class World {
     }
 
     public void cleanup() {
-        System.out.println("Cleaning up world (" + chunks.size() + " chunks)...");
+        System.out.println("[World] Cleaning up (" + chunks.size() + " chunks)...");
 
-        // Shutdown generation manager
         if (generationManager != null) {
             generationManager.shutdown();
         }
@@ -466,6 +583,8 @@ public class World {
 
         renderer.cleanup();
         chunks.clear();
+
+        System.out.println("[World] Cleanup complete");
     }
 
     // ========== CHUNK POSITION ==========
