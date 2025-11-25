@@ -18,11 +18,11 @@ public class Player extends Entity {
     private static final float GRAVITY = -0.08f;
     private static final float WATER_GRAVITY = -0.02f;
     private static final float JUMP_STRENGTH = 0.50f;
-    private static final float WATER_SWIM_SPEED = 0.25f;
-    private static final float WATER_JUMP_BOOST = 0.45f;
+    private static final float WATER_SWIM_SPEED = 0.40f; // INCREASED: Stronger swim
+    private static final float WATER_JUMP_BOOST = 0.60f; // INCREASED: Stronger jump from ground in water
     private static final float TERMINAL_VELOCITY = -3.92f;
     private static final float WATER_TERMINAL_VELOCITY = -0.08f;
-    private static final float MAX_WATER_UP_SPEED = 0.50f;
+    private static final float MAX_WATER_UP_SPEED = 0.65f; // INCREASED: Allow faster upward movement
 
     // Movement constants
     private static final float STEP_HEIGHT = 0.6f;
@@ -30,7 +30,7 @@ public class Player extends Entity {
     private static final float SNEAK_SPEED_MULTIPLIER = 0.3f;
 
     // CRITICAL: Collision settings like Minecraft
-    private static final float COLLISION_TOLERANCE = 0.001f; // Minimal margin for floating point errors
+    private static final float COLLISION_TOLERANCE = 0.001f;
 
     private final long window;
     private World world;
@@ -327,6 +327,10 @@ public class Player extends Entity {
         onGround = false;
     }
 
+    /**
+     * CRITICAL FIX: Enhanced water stepping - easier to climb out of water
+     * Allow stepping even with slight downward velocity in water
+     */
     private void moveWithCollisionAndStep(float dx, float dz) {
         if (world == null) {
             x += dx;
@@ -343,7 +347,17 @@ public class Player extends Entity {
             return;
         }
 
-        boolean canStep = !sneaking && onGround && velocityY <= 0;
+        // CRITICAL: More forgiving stepping conditions
+        // In water: can step even when falling slightly (velocityY down to -0.1)
+        // This allows climbing even when gravity is pulling down
+        boolean canStep;
+        if (inWater) {
+            // In water: very forgiving - can step almost anytime when jumping
+            canStep = !sneaking && inputJump && velocityY >= -0.1f;
+        } else {
+            // On land: normal stepping
+            canStep = !sneaking && onGround && velocityY <= 0;
+        }
 
         if (canStep) {
             float optimalStep = findOptimalStepHeight(newX, newZ);
@@ -357,6 +371,13 @@ public class Player extends Entity {
                     y = targetY;
                     stepOffsetY = optimalStep;
                     onGround = true;
+
+                    // CRITICAL: Big boost when stepping from water
+                    // This helps player continue climbing
+                    if (inWater) {
+                        velocityY = Math.max(velocityY, 0.2f);
+                    }
+
                     return;
                 }
             }
