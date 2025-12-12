@@ -91,6 +91,10 @@ public class Game {
     // Current world info
     private WorldInfo currentWorldInfo;
 
+    // ✅ Autosave system
+    private long lastAutoSave = 0;
+    private static final long AUTOSAVE_INTERVAL = 60000; // 60 seconds
+
     public void start() {
         try {
             System.out.println("===============================================");
@@ -229,8 +233,8 @@ public class Game {
         // ✅ Create TimeOfDay first
         timeOfDay = new TimeOfDay();
 
-        // ✅ Create World with TimeOfDay
-        world = new World(timeOfDay);
+        // ✅ Create World with TimeOfDay AND WorldInfo for save/load support
+        world = new World(timeOfDay, worldInfo);
         world.setSeed(worldInfo.getSeed());
 
         player = new Player(world, window);
@@ -262,6 +266,13 @@ public class Game {
         interactionHandler = new BlockInteractionHandler(world, player, camera, REACH_DISTANCE);
         skyRenderer = new SkyRenderer(timeOfDay);
 
+        // ✅ FIX: Register ChatOverlay with MenuManager for proper key routing
+        menuManager.setChatOverlay(chatOverlay);
+        chatOverlay.setMenuManager(menuManager);
+
+        // ✅ FIX: Register Camera with MenuManager for proper mouse routing
+        menuManager.setCamera(camera);
+
         setupGameCallbacks();
         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
@@ -269,6 +280,9 @@ public class Game {
         isLoadingTerrain = true; // ✅ Enable loading screen state
         loadingStartTime = System.currentTimeMillis(); // ✅ Start Timer
         System.out.println("[Game] World loaded successfully, strictly loading terrain...");
+
+        // ✅ Reset autosave timer
+        lastAutoSave = System.currentTimeMillis();
     }
 
     /**
@@ -347,9 +361,11 @@ public class Game {
      * ✅ Return to main menu
      */
     private void returnToMainMenu() {
-        if (currentWorldInfo != null) {
+        // ✅ Save world before returning to menu
+        if (currentWorldInfo != null && world != null && player != null) {
+            System.out.println("[Game] Saving world before returning to menu...");
             currentWorldInfo.setLastPlayedTime(System.currentTimeMillis());
-            com.mineshaft.world.WorldSaveManager.saveWorldInfo(currentWorldInfo);
+            com.mineshaft.world.WorldSaveManager.saveWorldData(currentWorldInfo, world, player);
         }
 
         cleanupWorld();
@@ -490,16 +506,18 @@ public class Game {
                 // Wait for mesh builds to drop below 100 (stable enough)
                 if (readyChunks >= threshold && pendingMeshes < 100 && pendingGen == 0 && minTimePassed) {
                     isLoadingTerrain = false;
+                    // ✅ UPDATED: Load only player position and time from save
+                    // Chunks are now loaded during generation in ChunkGenerationManager
+                    if (currentWorldInfo != null) {
+                        com.mineshaft.world.WorldSaveManager.loadWorldData(currentWorldInfo, world, player);
+                    }
                 }
                 continue; // Skip physics/game render
             }
 
             if (isPlaying) {
-                // ESCAPE to Pause
-                if (input.isKeyPressed(GLFW_KEY_ESCAPE)) {
-                    menuManager.setGameState(GameState.PAUSED);
-                    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
-                }
+                // ✅ FIX: Removed manual ESC check - now handled by MenuManager callback
+                // which properly routes to PauseScreen.keyPressed()
 
                 while (delta >= 1) {
                     if (chatOverlay != null && !chatOverlay.isChatOpen()) {
@@ -527,9 +545,17 @@ public class Game {
             }
             lastFrameTime = now;
 
-            if (isPlaying) {
+            // ✅ FIX: Render game world when playing OR paused (for background)
+            // Then render pause menu overlay on top if paused
+            if (worldLoaded && world != null && player != null) {
                 renderGame(partialTicks);
+
+                // Render pause menu overlay if paused
+                if (menuManager.getGameState() == GameState.PAUSED) {
+                    menuManager.render();
+                }
             } else {
+                // No world loaded, render regular menus
                 renderMenu();
             }
 
@@ -538,6 +564,19 @@ public class Game {
             glfwSwapBuffers(window);
             glfwPollEvents();
 
+            // ✅ Autosave system (Minecraft-style)
+            if (isPlaying && world != null && player != null && currentWorldInfo != null) {
+                long currentTime = System.currentTimeMillis();
+                if (currentTime - lastAutoSave >= AUTOSAVE_INTERVAL) {
+                    System.out.println("[Game] Autosaving...");
+                    com.mineshaft.world.WorldSaveManager.saveWorldData(currentWorldInfo, world, player);
+                    lastAutoSave = currentTime;
+                }
+            }
+
+            // ✅ FIX: Only update input when actually playing, not when paused
+            // This prevents InputHandler from consuming key events that should go to pause
+            // menu
             if (isPlaying) {
                 input.update();
                 handleGameInput();

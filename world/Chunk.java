@@ -75,6 +75,9 @@ public class Chunk {
     private volatile ChunkState state = ChunkState.EMPTY;
     private boolean lightInitialized = false;
 
+    // ✅ SAVE OPTIMIZATION: Track if player modified this chunk
+    private boolean isModified = false;
+
     public Chunk(int chunkX, int chunkZ) {
         this.chunkX = chunkX;
         this.chunkZ = chunkZ;
@@ -686,9 +689,9 @@ public class Chunk {
         this.lightInitialized = initialized;
 
         if (initialized) {
-            // ✅ When lighting is initialized, move to LIGHT_PENDING state
+            // ✅ When lighting is initialized, move directly to READY
             if (state == ChunkState.GENERATED) {
-                state = ChunkState.LIGHT_PENDING;
+                state = ChunkState.READY;
             }
         }
     }
@@ -778,6 +781,12 @@ public class Chunk {
                 section.setNeedsLightingUpdate(true);
                 needsLightingUpdate = true;
             }
+
+            // ✅ SAVE OPTIMIZATION: Mark chunk as modified by player
+            // (Only if chunk is already generated - don't mark during terrain gen)
+            if (state.ordinal() >= ChunkState.GENERATED.ordinal()) {
+                markModified();
+            }
         }
     }
 
@@ -839,6 +848,27 @@ public class Chunk {
             }
         }
         return count;
+    }
+
+    /**
+     * ✅ SAVE OPTIMIZATION: Check if chunk has been modified by player
+     */
+    public boolean isModified() {
+        return isModified;
+    }
+
+    /**
+     * ✅ SAVE OPTIMIZATION: Mark chunk as modified (player placed/broke blocks)
+     */
+    public void markModified() {
+        this.isModified = true;
+    }
+
+    /**
+     * ✅ SAVE OPTIMIZATION: Clear modified flag after saving
+     */
+    public void markSaved() {
+        this.isModified = false;
     }
 
     @Override

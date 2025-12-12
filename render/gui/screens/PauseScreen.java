@@ -5,6 +5,7 @@ import com.mineshaft.render.gui.GameState;
 import com.mineshaft.render.gui.MenuManager;
 import com.mineshaft.render.gui.Screen;
 
+import static org.lwjgl.glfw.GLFW.*;
 import static org.lwjgl.opengl.GL11.*;
 
 public class PauseScreen extends Screen {
@@ -23,6 +24,14 @@ public class PauseScreen extends Screen {
     public void mouseClicked(double mouseX, double mouseY, int button) {
         // ✅ FIX: Remove delay so buttons work immediately
         super.mouseClicked(mouseX, mouseY, button);
+    }
+
+    @Override
+    public void keyPressed(int key, int scancode, int mods) {
+        if (key == GLFW_KEY_ESCAPE) {
+            // Resume game when ESC is pressed in pause menu
+            menuManager.setGameState(GameState.PLAYING);
+        }
     }
 
     @Override
@@ -61,6 +70,11 @@ public class PauseScreen extends Screen {
         glEnable(GL_TEXTURE_2D);
 
         renderTitle();
-        super.render(mouseX, mouseY);
+
+        // ✅ FIX: Render buttons manually instead of calling super.render()
+        // super.render() would re-render background, covering everything
+        for (com.mineshaft.render.gui.components.Button btn : buttons) {
+            btn.render(font, (float) mouseX, (float) mouseY);
+        }
     }
 }

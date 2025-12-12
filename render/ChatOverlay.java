@@ -51,7 +51,8 @@ public class ChatOverlay {
 
         font = new SimpleFont();
 
-        setupCallbacks();
+        // ✅ FIX: Don't set up callbacks here - they will be handled by MenuManager
+        // to avoid overwriting menu key handlers
 
         addMessage("§eChat system initialized!");
         addMessage("§7Press T to chat, / for commands");
@@ -59,34 +60,49 @@ public class ChatOverlay {
         System.out.println("✅ [Chat] Initialized with bigger font");
     }
 
-    private void setupCallbacks() {
-        glfwSetKeyCallback(window, (w, key, scancode, action, mods) -> {
-            if (action == GLFW_RELEASE)
-                return;
+    // ✅ FIX: Removed setupCallbacks() - callbacks now handled by MenuManager
+    // This method was overwriting MenuManager's key callback, breaking pause menu
+    // ESC handler
 
-            if (chatOpen) {
-                handleChatKeyPress(key, action);
-            } else {
-                handleGameKeyPress(key);
+    // ✅ Reference to MenuManager for pausing game
+    private com.mineshaft.render.gui.MenuManager menuManager;
+
+    /**
+     * ✅ Set MenuManager reference for game pause functionality
+     */
+    public void setMenuManager(com.mineshaft.render.gui.MenuManager menuManager) {
+        this.menuManager = menuManager;
+    }
+
+    /**
+     * ✅ Handle key press - called externally from game loop
+     */
+    public void keyPressed(int key, int scancode, int mods) {
+        if (chatOpen) {
+            handleChatKeyPress(key, GLFW_PRESS);
+        } else {
+            handleGameKeyPress(key);
+        }
+    }
+
+    /**
+     * ✅ Handle character input - called externally from game loop
+     */
+    public void charTyped(char codepoint) {
+        if (!chatOpen)
+            return;
+
+        if (ignoreNextChar) {
+            ignoreNextChar = false;
+            return;
+        }
+
+        if (codepoint >= 32 && codepoint < 127) {
+            if (currentInput.length() < 100) {
+                currentInput.append(codepoint);
+                historyIndex = -1;
             }
-        });
-
-        glfwSetCharCallback(window, (w, codepoint) -> {
-            if (!chatOpen)
-                return;
-
-            if (ignoreNextChar) {
-                ignoreNextChar = false;
-                return;
-            }
-
-            if (codepoint >= 32 && codepoint < 127) {
-                if (currentInput.length() < 100) {
-                    currentInput.append((char) codepoint);
-                    historyIndex = -1;
-                }
-            }
-        });
+        }
     }
 
     private void handleChatKeyPress(int key, int action) {
@@ -133,6 +149,14 @@ public class ChatOverlay {
     }
 
     private void handleGameKeyPress(int key) {
+        // ✅ ESC key opens pause menu
+        if (key == GLFW_KEY_ESCAPE) {
+            if (menuManager != null) {
+                menuManager.setGameState(com.mineshaft.render.gui.GameState.PAUSED);
+            }
+            return;
+        }
+
         if (key == GLFW_KEY_T) {
             openChat();
             ignoreNextChar = true;
@@ -430,8 +454,7 @@ public class ChatOverlay {
     }
 
     public void cleanup() {
-        glfwSetCharCallback(window, null);
-        glfwSetKeyCallback(window, null);
+        // ✅ FIX: No longer setting callbacks, so no need to clear them
 
         if (font != null) {
             font.cleanup();

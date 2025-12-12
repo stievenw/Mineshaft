@@ -75,6 +75,17 @@ public class SingleplayerScreen extends Screen {
         refreshWorldList();
     }
 
+    /**
+     * ✅ FIX: Refresh world list when screen is shown
+     * This ensures world list updates when returning from game to menu
+     */
+    @Override
+    public void onShow() {
+        super.onShow();
+        refreshWorldList(); // Reload world list from disk
+        System.out.println("[SingleplayerScreen] World list refreshed: " + worldList.size() + " worlds");
+    }
+
     private void refreshWorldList() {
         worldList = WorldSaveManager.getWorldList();
         selectedWorldIndex = -1;

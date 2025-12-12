@@ -21,6 +21,9 @@ public class ChunkGenerationManager {
     private final Set<ChunkPos> generating = ConcurrentHashMap.newKeySet();
     private final Queue<Chunk> pendingLighting = new ConcurrentLinkedQueue<>();
 
+    // ✅ NEW: World info for loading saved chunks
+    private WorldInfo worldInfo;
+
     // ⚙️ Configuration - ✅ INCREASED for faster loading
     private static final int GENERATOR_THREADS = Math.max(4, Runtime.getRuntime().availableProcessors());
     private static final int MAX_GENERATIONS_PER_FRAME = Math.max(8, Runtime.getRuntime().availableProcessors() * 2);
@@ -40,6 +43,15 @@ public class ChunkGenerationManager {
     }
 
     public ChunkGenerationManager() {
+        this(null); // Default constructor for backward compatibility
+    }
+
+    /**
+     * ✅ NEW: Constructor with WorldInfo for save/load support
+     */
+    public ChunkGenerationManager(WorldInfo worldInfo) {
+        this.worldInfo = worldInfo;
+
         generatorThreadPool = Executors.newFixedThreadPool(GENERATOR_THREADS, r -> {
             Thread t = new Thread(r, "ChunkGenerator");
             t.setDaemon(true);
@@ -48,7 +60,15 @@ public class ChunkGenerationManager {
         });
 
         System.out.println("[ChunkGen] Manager initialized with " + GENERATOR_THREADS + " threads, max "
-                + MAX_GENERATIONS_PER_FRAME + "/frame");
+                + MAX_GENERATIONS_PER_FRAME + "/frame" + (worldInfo != null ? ", world: " + worldInfo.getName() : ""));
+    }
+
+    /**
+     * ✅ NEW: Set world info (for when world loads after manager creation)
+     */
+    public void setWorldInfo(WorldInfo worldInfo) {
+        this.worldInfo = worldInfo;
+        System.out.println("[ChunkGen] WorldInfo set to: " + (worldInfo != null ? worldInfo.getName() : "null"));
     }
 
     /**
@@ -114,9 +134,11 @@ public class ChunkGenerationManager {
     }
 
     /**
-     * ✅ REWRITTEN: Generate chunk terrain + lighting in background thread
+     * ✅ REWRITTEN: Load saved chunk OR generate new terrain + lighting
      * 
      * Key changes:
+     * - FIRST checks for saved chunk data on disk
+     * - ONLY generates new terrain if no saved data exists
      * - Lighting done immediately in same thread (no waiting for main thread)
      * - Chunk becomes READY immediately
      * - Much faster chunk loading
@@ -124,7 +146,28 @@ public class ChunkGenerationManager {
     private void generateChunkAsync(Chunk chunk, ChunkPos pos) {
         try {
             // This runs in background thread - no OpenGL calls allowed!
-            chunk.generate();
+
+            // ✅ CRITICAL FIX: Try to load from disk FIRST
+            boolean loadedFromDisk = false;
+            if (worldInfo != null) {
+                WorldSaveManager.loadChunk(chunk, worldInfo.getFolderName());
+
+                // Check if chunk was successfully loaded
+                if (chunk.isGenerated()) {
+                    loadedFromDisk = true;
+                    if (Settings.DEBUG_CHUNK_LOADING) {
+                        System.out.println("[ChunkGen] Loaded chunk " + pos + " from disk");
+                    }
+                }
+            }
+
+            // ✅ FALLBACK: Generate new terrain if not loaded from disk
+            if (!loadedFromDisk) {
+                chunk.generate();
+                if (Settings.DEBUG_CHUNK_LOADING) {
+                    System.out.println("[ChunkGen] Generated new terrain for chunk " + pos);
+                }
+            }
 
             // ✅ INSTANT LIGHTING: Done here in background thread
             initializeChunkLighting(chunk);

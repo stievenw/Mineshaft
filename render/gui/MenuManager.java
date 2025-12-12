@@ -30,6 +30,12 @@ public class MenuManager {
     private Runnable onQuitGame;
     private WorldLoadCallback onWorldLoad;
 
+    // ✅ FIX: Add reference to ChatOverlay for routing key events
+    private com.mineshaft.render.ChatOverlay chatOverlay;
+
+    // ✅ FIX: Add reference to Camera for routing mouse movement
+    private com.mineshaft.entity.Camera camera;
+
     @FunctionalInterface
     public interface WorldLoadCallback {
         void onLoad(WorldInfo worldInfo);
@@ -66,12 +72,17 @@ public class MenuManager {
 
     private void setupCallbacks() {
         glfwSetCursorPosCallback(window, (w, xpos, ypos) -> {
-            mouseX = xpos;
-            mouseY = ypos;
+            // ✅ FIX: Route to Camera when playing, otherwise update menu mouse position
+            if (currentState == GameState.PLAYING && camera != null) {
+                camera.processMouse(xpos, ypos);
+            } else {
+                mouseX = xpos;
+                mouseY = ypos;
 
-            Screen current = screens.get(currentState);
-            if (current instanceof OptionsScreen) {
-                ((OptionsScreen) current).mouseDragged(mouseX, mouseY);
+                Screen current = screens.get(currentState);
+                if (current instanceof OptionsScreen) {
+                    ((OptionsScreen) current).mouseDragged(mouseX, mouseY);
+                }
             }
         });
 
@@ -93,17 +104,27 @@ public class MenuManager {
 
         glfwSetKeyCallback(window, (w, key, scancode, action, mods) -> {
             if (action == GLFW_PRESS || action == GLFW_REPEAT) {
-                Screen current = screens.get(currentState);
-                if (current != null) {
-                    current.keyPressed(key, scancode, mods);
+                // ✅ FIX: Route to ChatOverlay when playing, otherwise to menu screens
+                if (currentState == GameState.PLAYING && chatOverlay != null) {
+                    chatOverlay.keyPressed(key, scancode, mods);
+                } else {
+                    Screen current = screens.get(currentState);
+                    if (current != null) {
+                        current.keyPressed(key, scancode, mods);
+                    }
                 }
             }
         });
 
         glfwSetCharCallback(window, (w, codepoint) -> {
-            Screen current = screens.get(currentState);
-            if (current != null) {
-                current.charTyped((char) codepoint);
+            // ✅ FIX: Route to ChatOverlay when playing, otherwise to menu screens
+            if (currentState == GameState.PLAYING && chatOverlay != null) {
+                chatOverlay.charTyped((char) codepoint);
+            } else {
+                Screen current = screens.get(currentState);
+                if (current != null) {
+                    current.charTyped((char) codepoint);
+                }
             }
         });
 
@@ -140,6 +161,11 @@ public class MenuManager {
             Screen newScreen = screens.get(currentState);
             if (newScreen != null) {
                 newScreen.onShow();
+            }
+
+            // ✅ FIX: Reset camera mouse when pausing to prevent jump when resuming
+            if (currentState == GameState.PAUSED && camera != null) {
+                camera.resetMouse();
             }
 
             if (currentState == GameState.PLAYING) {
@@ -249,5 +275,19 @@ public class MenuManager {
 
     public SimpleFont getFont() {
         return font;
+    }
+
+    /**
+     * ✅ FIX: Set ChatOverlay reference for routing key events during gameplay
+     */
+    public void setChatOverlay(com.mineshaft.render.ChatOverlay chatOverlay) {
+        this.chatOverlay = chatOverlay;
+    }
+
+    /**
+     * ✅ FIX: Set Camera reference for routing mouse movement during gameplay
+     */
+    public void setCamera(com.mineshaft.entity.Camera camera) {
+        this.camera = camera;
     }
 }

@@ -25,29 +25,41 @@ public class Camera {
     public Camera(Player player, long window) {
         this.player = player;
         this.window = window;
-        setupMouseCallback();
+        // ✅ FIX: Don't set up callback here - will be handled by game loop
+        // to avoid overwriting MenuManager's cursor callback
     }
 
-    private void setupMouseCallback() {
-        glfwSetCursorPosCallback(window, (w, xpos, ypos) -> {
-            if (firstMouse) {
-                lastMouseX = xpos;
-                lastMouseY = ypos;
-                firstMouse = false;
-                return;
-            }
+    // ✅ FIX: Removed setupMouseCallback() - cursorcallback now handled by game loop
+    // This method was overwriting MenuManager's cursor callback
 
-            float xoffset = (float) (xpos - lastMouseX);
-            float yoffset = (float) (lastMouseY - ypos);
-
+    /**
+     * ✅ Process mouse movement - called externally from game loop when playing
+     */
+    public void processMouse(double xpos, double ypos) {
+        if (firstMouse) {
             lastMouseX = xpos;
             lastMouseY = ypos;
+            firstMouse = false;
+            return;
+        }
 
-            processMouse(xoffset, yoffset);
-        });
+        float xoffset = (float) (xpos - lastMouseX);
+        float yoffset = (float) (lastMouseY - ypos);
+
+        lastMouseX = xpos;
+        lastMouseY = ypos;
+
+        processMouseDelta(xoffset, yoffset);
     }
 
-    private void processMouse(float xoffset, float yoffset) {
+    /**
+     * Reset first mouse flag when camera is re-enabled
+     */
+    public void resetMouse() {
+        firstMouse = true;
+    }
+
+    private void processMouseDelta(float xoffset, float yoffset) {
         xoffset *= MOUSE_SENSITIVITY;
         yoffset *= MOUSE_SENSITIVITY;
 

@@ -41,6 +41,9 @@ public class World {
     private com.mineshaft.world.lighting.SimpleLightEngine simpleLightEngine; // ✅ NEW: Better cave lighting
     private ChunkGenerationManager generationManager;
 
+    // ✅ NEW: WorldInfo for save/load support
+    private WorldInfo worldInfo;
+
     private int renderDistance = Settings.RENDER_DISTANCE;
     private TimeOfDay timeOfDay;
 
@@ -50,12 +53,21 @@ public class World {
     private static final long CHUNK_LOG_INTERVAL = 2000;
 
     public World(TimeOfDay timeOfDay) {
+        this(timeOfDay, null); // Backward compatibility
+    }
+
+    /**
+     * ✅ NEW: Constructor with WorldInfo for save/load support
+     */
+    public World(TimeOfDay timeOfDay, WorldInfo worldInfo) {
         this.timeOfDay = timeOfDay;
+        this.worldInfo = worldInfo;
+
         renderer.setWorld(this);
         // lightingEngine = new LightingEngine(this, timeOfDay); // REMOVED
         simpleLightEngine = new com.mineshaft.world.lighting.SimpleLightEngine(this); // ✅ NEW
         // renderer.setLightingEngine(lightingEngine); // REMOVED
-        generationManager = new ChunkGenerationManager();
+        generationManager = new ChunkGenerationManager(worldInfo); // ✅ Pass WorldInfo
 
         // ✅ Initialize renderer with current time brightness
         if (timeOfDay != null) {
@@ -63,7 +75,19 @@ public class World {
         }
 
         System.out.println(
-                "[World] Created with SimpleLightEngine (render distance: " + renderDistance + " chunks)");
+                "[World] Created with SimpleLightEngine (render distance: " + renderDistance + " chunks)" +
+                        (worldInfo != null ? " for world: " + worldInfo.getName() : ""));
+    }
+
+    /**
+     * ✅ NEW: Set world info (for when world loads after World creation)
+     */
+    public void setWorldInfo(WorldInfo worldInfo) {
+        this.worldInfo = worldInfo;
+        if (generationManager != null) {
+            generationManager.setWorldInfo(worldInfo);
+        }
+        System.out.println("[World] WorldInfo set to: " + (worldInfo != null ? worldInfo.getName() : "null"));
     }
 
     /**
@@ -202,8 +226,8 @@ public class World {
         // Update async generation system
         generationManager.update();
 
-        // Update lighting for generated chunks
-        updateLighting();
+        // ✅ Lighting is now done synchronously in ChunkGenerationManager - no separate
+        // update needed
 
         // ✅ Process cross-chunk light propagation
         // ProLightingEngine removed in favor of SimpleLightEngine
@@ -261,28 +285,11 @@ public class World {
     }
 
     /**
-     * ✅ REVISED v2: Initialize lighting using SimpleLightEngine
+     * ✅ REMOVED: updateLighting() is no longer needed
      * 
-     * Uses proper BFS flood-fill for cave lighting.
+     * Lighting is now done synchronously in ChunkGenerationManager.
+     * Chunks transition directly from GENERATED → READY.
      */
-    private void updateLighting() {
-        int processed = 0;
-        int maxPerFrame = 8; // Process a few chunks per frame to avoid lag
-
-        for (Chunk chunk : chunks.values()) {
-            if (processed >= maxPerFrame)
-                break;
-
-            // Only process chunks that have terrain generated but no lighting yet
-            if (chunk.getState() == ChunkState.LIGHT_PENDING && !chunk.isLightInitialized()) {
-                // ✅ Use SimpleLightEngine for proper cave lighting
-                if (simpleLightEngine != null) {
-                    simpleLightEngine.initializeChunk(chunk);
-                }
-                processed++;
-            }
-        }
-    }
 
     // ========== PUBLIC CHUNK LOADING API ==========
 
@@ -309,9 +316,8 @@ public class World {
         if (chunk != null && !chunk.isGenerated()) {
             chunk.generate();
 
-            // Initialize lighting after generation - FAST MODE
+            // ✅ Lighting is now done in ChunkGenerationManager synchronously
             if (chunk.isGenerated() && !chunk.isLightInitialized()) {
-                chunk.setState(ChunkState.LIGHT_PENDING);
                 if (simpleLightEngine != null) {
                     simpleLightEngine.initializeChunk(chunk);
                 }
