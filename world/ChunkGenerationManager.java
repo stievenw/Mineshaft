@@ -1,7 +1,6 @@
 // src/main/java/com/mineshaft/world/ChunkGenerationManager.java
 package com.mineshaft.world;
 
-import com.mineshaft.block.BlockRegistry;
 import com.mineshaft.block.GameBlock;
 import com.mineshaft.core.Settings;
 
@@ -176,19 +175,27 @@ public class ChunkGenerationManager {
                         if (currentLight > 1) {
                             lightQueue.add(new int[] { x, worldY, z, currentLight });
                         }
-                    } else if (block == BlockRegistry.WATER || block == BlockRegistry.OAK_LEAVES) {
-                        currentLight = Math.max(0, currentLight - 1);
-                        chunk.setSkyLight(x, worldY, z, currentLight);
-                        if (currentLight > 1) {
-                            lightQueue.add(new int[] { x, worldY, z, currentLight });
-                        }
-                    } else if (block.isSolid()) {
-                        currentLight = 0;
-                        chunk.setSkyLight(x, worldY, z, 0);
                     } else {
-                        chunk.setSkyLight(x, worldY, z, currentLight);
-                        if (currentLight > 1) {
-                            lightQueue.add(new int[] { x, worldY, z, currentLight });
+                        // ✅ NEW: Use lightOpacity property for semi-transparent blocks
+                        int opacity = block.getLightOpacity();
+
+                        if (opacity > 0) {
+                            // Semi-transparent block (e.g. leaves): reduce light by opacity
+                            currentLight = Math.max(0, currentLight - opacity);
+                            chunk.setSkyLight(x, worldY, z, currentLight);
+                            if (currentLight > 1) {
+                                lightQueue.add(new int[] { x, worldY, z, currentLight });
+                            }
+                        } else if (block.isSolid()) {
+                            // Fully opaque: block light completely
+                            currentLight = 0;
+                            chunk.setSkyLight(x, worldY, z, 0);
+                        } else {
+                            // Transparent: light passes through
+                            chunk.setSkyLight(x, worldY, z, currentLight);
+                            if (currentLight > 1) {
+                                lightQueue.add(new int[] { x, worldY, z, currentLight });
+                            }
                         }
                     }
                 }
@@ -223,16 +230,18 @@ public class ChunkGenerationManager {
                 // Get neighbor block
                 GameBlock neighbor = chunk.getBlock(nx, ny, nz);
 
-                // Skip solid blocks (they block light)
-                if (neighbor != null && neighbor.isSolid() &&
-                        neighbor != BlockRegistry.WATER && neighbor != BlockRegistry.OAK_LEAVES) {
-                    continue;
+                // Skip fully opaque solid blocks
+                if (neighbor != null && neighbor.isSolid() && neighbor.getLightOpacity() == 0) {
+                    continue; // Fully opaque blocks block light
                 }
 
-                // Calculate new light level (decay by 1)
+                // Calculate new light level (decay by 1 base + opacity)
                 int newLight = light - 1;
-                if (neighbor == BlockRegistry.WATER) {
-                    newLight -= 2; // Water absorbs more light
+                if (neighbor != null) {
+                    int opacity = neighbor.getLightOpacity();
+                    if (opacity > 0) {
+                        newLight -= opacity; // Additional decay for semi-transparent blocks
+                    }
                 }
 
                 if (newLight <= 0)
@@ -289,12 +298,19 @@ public class ChunkGenerationManager {
                     continue;
 
                 GameBlock neighbor = chunk.getBlock(nx, ny, nz);
-                if (neighbor != null && neighbor.isSolid() &&
-                        neighbor != BlockRegistry.WATER && neighbor != BlockRegistry.OAK_LEAVES) {
+
+                // Skip fully opaque solid blocks
+                if (neighbor != null && neighbor.isSolid() && neighbor.getLightOpacity() == 0) {
                     continue;
                 }
 
                 int newLight = light - 1;
+                if (neighbor != null) {
+                    int opacity = neighbor.getLightOpacity();
+                    if (opacity > 0) {
+                        newLight -= opacity;
+                    }
+                }
                 if (newLight <= 0)
                     continue;
 

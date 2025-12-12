@@ -15,6 +15,7 @@ public class BlockData {
         public float hardness = 0.0f;
         public float resistance = 0.0f;
         public int lightLevel = 0;
+        public int lightOpacity = 0; // 0 = transparent, 15 = fully opaque
         public String toolType = "none";
         public boolean requiresTool = false;
         public boolean isSolid = true;

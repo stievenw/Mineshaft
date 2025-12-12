@@ -268,36 +268,51 @@ public class SimpleLightEngine {
     }
 
     /**
-     * ✅ Called when a block is PLACED - blocks light and propagates darkness
+     * ✅ Called when a block is PLACED - updates lighting based on opacity
      * 
-     * This properly removes light from tunnels when the entrance is blocked.
+     * NOW SUPPORTS LIGHT OPACITY for semi-transparent blocks like leaves
      */
     public void onBlockPlaced(int worldX, int worldY, int worldZ, GameBlock block) {
         if (block == null)
             return;
 
-        // If block is solid, it blocks light
-        if (block.isSolid() && !isTransparent(block)) {
-            // Remember the old light values for removal propagation
+        int opacity = block.getLightOpacity();
+
+        // Handle light blocking based on opacity
+        if (opacity > 0 || (block.isSolid() && !isTransparent(block))) {
+            // Remember old light values
             int oldSkyLight = getWorldSkyLight(worldX, worldY, worldZ);
             int oldBlockLight = getWorldBlockLight(worldX, worldY, worldZ);
 
-            // Set this position to 0
-            setWorldSkyLight(worldX, worldY, worldZ, 0);
-            setWorldBlockLight(worldX, worldY, worldZ, 0);
+            // Calculate new light based on opacity
+            int newSkyLight, newBlockLight;
 
-            // ✅ CRITICAL: Propagate light removal into tunnels
-            // Vertical first for skylight (Shadow drops instantly)
-            if (oldSkyLight == 15) {
-                // If we blocked a vertical beam, we must darken the column below
-                propagateVerticalShadow(worldX, worldY - 1, worldZ);
-                // Also do standard removal for horizontal spread
-                removeLightFrom(worldX, worldY, worldZ, oldSkyLight, true);
-            } else if (oldSkyLight > 1) {
-                removeLightFrom(worldX, worldY, worldZ, oldSkyLight, true);
+            if (opacity > 0) {
+                // Semi-transparent: reduce by opacity amount
+                newSkyLight = Math.max(0, oldSkyLight - opacity);
+                newBlockLight = Math.max(0, oldBlockLight - opacity);
+            } else {
+                // Fully opaque: block completely
+                newSkyLight = 0;
+                newBlockLight = 0;
             }
 
-            if (oldBlockLight > 1) {
+            // Apply new light values
+            setWorldSkyLight(worldX, worldY, worldZ, newSkyLight);
+            setWorldBlockLight(worldX, worldY, worldZ, newBlockLight);
+
+            // Propagate darkness if light was blocked
+            if (oldSkyLight > newSkyLight) {
+                if (oldSkyLight == 15 && newSkyLight < 15) {
+                    // Blocked vertical beam - darken column below
+                    propagateVerticalShadow(worldX, worldY - 1, worldZ);
+                    removeLightFrom(worldX, worldY, worldZ, oldSkyLight, true);
+                } else if (oldSkyLight > 1) {
+                    removeLightFrom(worldX, worldY, worldZ, oldSkyLight, true);
+                }
+            }
+
+            if (oldBlockLight > newBlockLight && oldBlockLight > 1) {
                 removeLightFrom(worldX, worldY, worldZ, oldBlockLight, false);
             }
         }

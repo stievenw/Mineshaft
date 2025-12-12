@@ -10,6 +10,7 @@ public class BlockProperties {
     private boolean requiresCorrectTool = false;
     private String toolType = "hand";
     private int lightLevel = 0;
+    private int lightOpacity = 0; // 0 = transparent, 15 = fully opaque
     private float[] color = { 1.0f, 1.0f, 1.0f };
 
     private BlockProperties() {
@@ -65,6 +66,11 @@ public class BlockProperties {
         return this;
     }
 
+    public BlockProperties lightOpacity(int opacity) {
+        this.lightOpacity = Math.max(0, Math.min(15, opacity));
+        return this;
+    }
+
     public BlockProperties color(float r, float g, float b) {
         this.color = new float[] { r, g, b };
         return this;
@@ -96,6 +102,10 @@ public class BlockProperties {
 
     public int getLightLevel() {
         return lightLevel;
+    }
+
+    public int getLightOpacity() {
+        return lightOpacity;
     }
 
     public float[] getColor() {

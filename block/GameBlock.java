@@ -38,6 +38,10 @@ public class GameBlock {
         return data.properties.lightLevel;
     }
 
+    public int getLightOpacity() {
+        return data.properties.lightOpacity;
+    }
+
     public boolean isSolid() {
         return data.properties.isSolid;
     }
